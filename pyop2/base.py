@@ -186,6 +186,10 @@ class ExecutionTrace(object):
                 new_trace.append(comp)
         self._trace = new_trace
 
+        if configuration['vectorize']:
+            from pyop2.vectorizer import vectorize
+            to_run = vectorize(parloops=to_run)
+
         if configuration['loop_fusion']:
             from pyop2.fusion.interface import fuse, lazy_trace_name
             to_run = fuse(lazy_trace_name, to_run)

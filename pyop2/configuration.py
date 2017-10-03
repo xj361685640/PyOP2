@@ -100,6 +100,7 @@ class Configuration(dict):
                               os.path.join(gettempdir(), "pyop2-gencode")),
         "matnest": ("PYOP2_MATNEST", bool, True),
         "block_sparsity": ("PYOP2_BLOCK_SPARSITY", bool, True),
+        "vectorize": ("PYOP2_VECT", bool, True),
     }
     """Default values for PyOP2 configuration parameters"""
 
