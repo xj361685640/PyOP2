@@ -35,15 +35,13 @@
 
 """Utility functions for generating wrappers for PyOP2 kernels."""
 
-from __future__ import absolute_import, print_function, division
-
 from collections import namedtuple
 
 import numpy
 
+from pyop2.datatypes import as_cstr
 from pyop2.base import READ, WRITE, RW, INC
 from pyop2.base import Dat, DatView, Global, IterationIndex, Mat
-from pyop2.base import c_typename
 
 
 integer_types = {"int"}
@@ -469,7 +467,7 @@ def wrapper_DatMap(cache_key, args, c, col, namer, layer, is_facet=False):
 
     buf_name = namer('vec')
 
-    typenames = set(c_typename(d.dtype) for d in cache_key.data)
+    typenames = set(as_cstr(d.dtype) for d in cache_key.data)
     typename, = list(typenames)
 
     pointers = []

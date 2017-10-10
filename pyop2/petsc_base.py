@@ -31,12 +31,12 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
 # OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from __future__ import absolute_import, print_function, division
 from contextlib import contextmanager
 from petsc4py import PETSc
 from functools import partial
 import numpy as np
 
+from pyop2.datatypes import IntType
 from pyop2 import base
 from pyop2 import mpi
 from pyop2 import sparsity
@@ -55,12 +55,19 @@ class DataSet(base.DataSet):
         """
         lgmap = PETSc.LGMap()
         if self.comm.size == 1:
-            lgmap.create(indices=np.arange(self.size, dtype=PETSc.IntType),
+            lgmap.create(indices=np.arange(self.size, dtype=IntType),
                          bsize=self.cdim, comm=self.comm)
         else:
-            lgmap.create(indices=self.halo.global_to_petsc_numbering,
+            lgmap.create(indices=self.halo.local_to_global_numbering,
                          bsize=self.cdim, comm=self.comm)
         return lgmap
+
+    @utils.cached_property
+    def scalar_lgmap(self):
+        if self.cdim == 1:
+            return self.lgmap
+        indices = self.lgmap.block_indices
+        return PETSc.LGMap().create(indices=indices, bsize=1, comm=self.comm)
 
     @utils.cached_property
     def unblocked_lgmap(self):
@@ -134,7 +141,7 @@ class GlobalDataSet(base.GlobalDataSet):
         indices for this :class:`DataSet`.
         """
         lgmap = PETSc.LGMap()
-        lgmap.create(indices=np.arange(1, dtype=PETSc.IntType),
+        lgmap.create(indices=np.arange(1, dtype=IntType),
                      bsize=self.cdim, comm=self.comm)
         return lgmap
 
@@ -237,7 +244,7 @@ class MixedDataSet(DataSet, base.MixedDataSet):
         lgmap = PETSc.LGMap()
         if self.comm.size == 1:
             size = sum(s.size * s.cdim for s in self)
-            lgmap.create(indices=np.arange(size, dtype=PETSc.IntType),
+            lgmap.create(indices=np.arange(size, dtype=IntType),
                          bsize=1, comm=self.comm)
             return lgmap
         # Compute local to global maps for a monolithic mixed system
@@ -264,25 +271,26 @@ class MixedDataSet(DataSet, base.MixedDataSet):
         # Finally, we need to shift the field-local entry by the
         # current field offset.
         idx_size = sum(s.total_size*s.cdim for s in self)
-        indices = np.full(idx_size, -1, dtype=PETSc.IntType)
-        owned_sz = np.array([sum(s.size * s.cdim for s in self)], dtype=PETSc.IntType)
+        indices = np.full(idx_size, -1, dtype=IntType)
+        owned_sz = np.array([sum(s.size * s.cdim for s in self)],
+                            dtype=IntType)
         field_offset = np.empty_like(owned_sz)
         self.comm.Scan(owned_sz, field_offset)
         field_offset -= owned_sz
 
-        all_field_offsets = np.empty(self.comm.size, dtype=PETSc.IntType)
+        all_field_offsets = np.empty(self.comm.size, dtype=IntType)
         self.comm.Allgather(field_offset, all_field_offsets)
 
         start = 0
-        all_local_offsets = np.zeros(self.comm.size, dtype=PETSc.IntType)
-        current_offsets = np.zeros(self.comm.size + 1, dtype=PETSc.IntType)
+        all_local_offsets = np.zeros(self.comm.size, dtype=IntType)
+        current_offsets = np.zeros(self.comm.size + 1, dtype=IntType)
         for s in self:
             idx = indices[start:start + s.total_size * s.cdim]
             owned_sz[0] = s.size * s.cdim
             self.comm.Scan(owned_sz, field_offset)
             self.comm.Allgather(field_offset, current_offsets[1:])
             # Find the ranks each entry in the l2g belongs to
-            l2g = s.halo.global_to_petsc_numbering
+            l2g = s.halo.local_to_global_numbering
             # If cdim > 1, we need to unroll the node numbering to dof
             # numbering
             if s.cdim > 1:
@@ -310,27 +318,25 @@ class MixedDataSet(DataSet, base.MixedDataSet):
 class Dat(base.Dat):
 
     @contextmanager
-    def vec_context(self, readonly=True):
+    def vec_context(self, access):
         """A context manager for a :class:`PETSc.Vec` from a :class:`Dat`.
 
-        :param readonly: Access the data read-only (use :meth:`Dat.data_ro`)
-                         or read-write (use :meth:`Dat.data`). Read-write
-                         access requires a halo update."""
+        :param access: Access descriptor: READ, WRITE, or RW."""
 
         assert self.dtype == PETSc.ScalarType, \
             "Can't create Vec with type %s, must be %s" % (self.dtype, PETSc.ScalarType)
-        acc = (lambda d: d.data_ro) if readonly else (lambda d: d.data)
-        # Getting the Vec needs to ensure we've done all current computation.
-        # If we only want readonly access then there's no need to
-        # force the evaluation of reads from the Dat.
-        self._force_evaluation(read=True, write=not readonly)
+        # Getting the Vec needs to ensure we've done all current
+        # necessary computation.
+        self._force_evaluation(read=access is not base.WRITE,
+                               write=access is not base.READ)
         if not hasattr(self, '_vec'):
             # Can't duplicate layout_vec of dataset, because we then
             # carry around extra unnecessary data.
             # But use getSizes to save an Allreduce in computing the
             # global size.
             size = self.dataset.layout_vec.getSizes()
-            self._vec = PETSc.Vec().createWithArray(acc(self), size=size,
+            data = self._data[:size[0]]
+            self._vec = PETSc.Vec().createWithArray(data, size=size,
                                                     bsize=self.cdim,
                                                     comm=self.comm)
         # PETSc Vecs have a state counter and cache norm computations
@@ -339,8 +345,8 @@ class Dat(base.Dat):
         # change that state counter.
         self._vec.stateIncrease()
         yield self._vec
-        if not readonly:
-            self.needs_halo_update = True
+        if access is not base.READ:
+            self.halo_valid = False
 
     @property
     @collective
@@ -348,7 +354,16 @@ class Dat(base.Dat):
         """Context manager for a PETSc Vec appropriate for this Dat.
 
         You're allowed to modify the data you get back from this view."""
-        return self.vec_context(readonly=False)
+        return self.vec_context(access=base.RW)
+
+    @property
+    @collective
+    def vec_wo(self):
+        """Context manager for a PETSc Vec appropriate for this Dat.
+
+        You're allowed to modify the data you get back from this view,
+        but you cannot read from it."""
+        return self.vec_context(access=base.WRITE)
 
     @property
     @collective
@@ -356,20 +371,18 @@ class Dat(base.Dat):
         """Context manager for a PETSc Vec appropriate for this Dat.
 
         You're not allowed to modify the data you get back from this view."""
-        return self.vec_context()
+        return self.vec_context(access=base.READ)
 
 
 class MixedDat(base.MixedDat):
 
     @contextmanager
-    def vecscatter(self, readonly=True):
+    def vecscatter(self, access):
         """A context manager scattering the arrays of all components of this
         :class:`MixedDat` into a contiguous :class:`PETSc.Vec` and reverse
         scattering to the original arrays when exiting the context.
 
-        :param readonly: Access the data read-only (use :meth:`Dat.data_ro`)
-                         or read-write (use :meth:`Dat.data`). Read-write
-                         access requires a halo update.
+        :param access: Access descriptor: READ, WRITE, or RW.
 
         .. note::
 
@@ -380,7 +393,6 @@ class MixedDat(base.MixedDat):
 
         assert self.dtype == PETSc.ScalarType, \
             "Can't create Vec with type %s, must be %s" % (self.dtype, PETSc.ScalarType)
-        acc = (lambda d: d.vec_ro) if readonly else (lambda d: d.vec)
         # Allocate memory for the contiguous vector
         if not hasattr(self, '_vec'):
             # In this case we can just duplicate the layout vec
@@ -388,21 +400,23 @@ class MixedDat(base.MixedDat):
             self._vec = self.dataset.layout_vec.duplicate()
 
         scatters = self.dataset.vecscatters
-        # Do the actual forward scatter to fill the full vector with values
-        for d, vscat in zip(self, scatters):
-            with acc(d) as v:
-                vscat.scatterBegin(v, self._vec, addv=PETSc.InsertMode.INSERT_VALUES)
-                vscat.scatterEnd(v, self._vec, addv=PETSc.InsertMode.INSERT_VALUES)
+        # Do the actual forward scatter to fill the full vector with
+        # values
+        if access is not base.WRITE:
+            for d, vscat in zip(self, scatters):
+                with d.vec_ro as v:
+                    vscat.scatterBegin(v, self._vec, addv=PETSc.InsertMode.INSERT_VALUES)
+                    vscat.scatterEnd(v, self._vec, addv=PETSc.InsertMode.INSERT_VALUES)
         yield self._vec
-        if not readonly:
+        if access is not base.READ:
             # Reverse scatter to get the values back to their original locations
             for d, vscat in zip(self, scatters):
-                with acc(d) as v:
+                with d.vec_wo as v:
                     vscat.scatterBegin(self._vec, v, addv=PETSc.InsertMode.INSERT_VALUES,
                                        mode=PETSc.ScatterMode.REVERSE)
                     vscat.scatterEnd(self._vec, v, addv=PETSc.InsertMode.INSERT_VALUES,
                                      mode=PETSc.ScatterMode.REVERSE)
-            self.needs_halo_update = True
+            self.halo_valid = False
 
     @property
     @collective
@@ -410,7 +424,16 @@ class MixedDat(base.MixedDat):
         """Context manager for a PETSc Vec appropriate for this Dat.
 
         You're allowed to modify the data you get back from this view."""
-        return self.vecscatter(readonly=False)
+        return self.vecscatter(access=base.RW)
+
+    @property
+    @collective
+    def vec_wo(self):
+        """Context manager for a PETSc Vec appropriate for this Dat.
+
+        You're allowed to modify the data you get back from this view,
+        but you cannot read from it."""
+        return self.vecscatter(access=base.WRITE)
 
     @property
     @collective
@@ -418,26 +441,24 @@ class MixedDat(base.MixedDat):
         """Context manager for a PETSc Vec appropriate for this Dat.
 
         You're not allowed to modify the data you get back from this view."""
-        return self.vecscatter()
+        return self.vecscatter(access=base.READ)
 
 
 class Global(base.Global):
 
     @contextmanager
-    def vec_context(self, readonly=True):
+    def vec_context(self, access):
         """A context manager for a :class:`PETSc.Vec` from a :class:`Global`.
 
-        :param readonly: Access the data read-only (use :meth:`Dat.data_ro`)
-                         or read-write (use :meth:`Dat.data`). Read-write
-                         access requires a halo update."""
+        :param access: Access descriptor: READ, WRITE, or RW."""
 
         assert self.dtype == PETSc.ScalarType, \
             "Can't create Vec with type %s, must be %s" % (self.dtype, PETSc.ScalarType)
-        acc = (lambda d: d.data_ro) if readonly else (lambda d: d.data)
-        # Getting the Vec needs to ensure we've done all current computation.
-        # If we only want readonly access then there's no need to
-        # force the evaluation of reads from the Dat.
-        self._force_evaluation(read=True, write=not readonly)
+        # Getting the Vec needs to ensure we've done all current
+        # necessary computation.
+        self._force_evaluation(read=access is not base.WRITE,
+                               write=access is not base.READ)
+        data = self._data
         if not hasattr(self, '_vec'):
             # Can't duplicate layout_vec of dataset, because we then
             # carry around extra unnecessary data.
@@ -445,20 +466,22 @@ class Global(base.Global):
             # global size.
             size = self.dataset.layout_vec.getSizes()
             if self.comm.rank == 0:
-                self._vec = PETSc.Vec().createWithArray(acc(self), size=size,
-                                                        bsize=self.cdim)
+                self._vec = PETSc.Vec().createWithArray(data, size=size,
+                                                        bsize=self.cdim,
+                                                        comm=self.comm)
             else:
                 self._vec = PETSc.Vec().createWithArray(np.empty(0, dtype=self.dtype),
                                                         size=size,
-                                                        bsize=self.cdim)
+                                                        bsize=self.cdim,
+                                                        comm=self.comm)
         # PETSc Vecs have a state counter and cache norm computations
         # to return immediately if the state counter is unchanged.
         # Since we've updated the data behind their back, we need to
         # change that state counter.
         self._vec.stateIncrease()
         yield self._vec
-        if not readonly:
-            self.comm.Bcast(acc(self), 0)
+        if access is not base.READ:
+            self.comm.Bcast(data, 0)
 
     @property
     @collective
@@ -466,7 +489,16 @@ class Global(base.Global):
         """Context manager for a PETSc Vec appropriate for this Dat.
 
         You're allowed to modify the data you get back from this view."""
-        return self.vec_context(readonly=False)
+        return self.vec_context(access=base.RW)
+
+    @property
+    @collective
+    def vec_wo(self):
+        """Context manager for a PETSc Vec appropriate for this Dat.
+
+        You're allowed to modify the data you get back from this view,
+        but you cannot read from it."""
+        return self.vec_context(access=base.WRITE)
 
     @property
     @collective
@@ -474,7 +506,7 @@ class Global(base.Global):
         """Context manager for a PETSc Vec appropriate for this Dat.
 
         You're not allowed to modify the data you get back from this view."""
-        return self.vec_context()
+        return self.vec_context(access=base.READ)
 
 
 class SparsityBlock(base.Sparsity):
@@ -557,7 +589,7 @@ class MatBlock(base.Mat):
         self._parent._flush_assembly()
 
     def set_local_diagonal_entries(self, rows, diag_val=1.0, idx=None):
-        rows = np.asarray(rows, dtype=PETSc.IntType)
+        rows = np.asarray(rows, dtype=IntType)
         rbs, _ = self.dims[0][0]
         if len(rows) == 0:
             # No need to set anything if we didn't get any rows, but
@@ -605,8 +637,8 @@ class MatBlock(base.Mat):
         colis = cset.field_ises[self._j]
         base._trace.evaluate(set([self._parent]), set())
         self._parent.assemble()
-        mat = self._parent.handle.getSubMatrix(isrow=rowis,
-                                               iscol=colis)
+        mat = self._parent.handle.createSubMatrix(isrow=rowis,
+                                                  iscol=colis)
         return mat[:, :]
 
     @property
@@ -677,8 +709,10 @@ class Mat(base.Mat):
         # We completely fill the allocated matrix when zeroing the
         # entries, so raise an error if we "missed" one.
         mat.setOption(mat.Option.UNUSED_NONZERO_LOCATION_ERR, True)
-        mat.setOption(mat.Option.IGNORE_OFF_PROC_ENTRIES, True)
+        mat.setOption(mat.Option.IGNORE_OFF_PROC_ENTRIES, False)
         mat.setOption(mat.Option.NEW_NONZERO_ALLOCATION_ERR, True)
+        # The first assembly (filling with zeros) sets all possible entries.
+        mat.setOption(mat.Option.SUBSET_OFF_PROC_ENTRIES, True)
         # Put zeros in all the places we might eventually put a value.
         with timed_region("MatZeroInitial"):
             for i in range(rows):
@@ -687,8 +721,10 @@ class Mat(base.Mat):
                                              self[i, j].sparsity.dims[0][0],
                                              self[i, j].sparsity.maps,
                                              set_diag=self[i, j].sparsity._has_diagonal)
+                    self[i, j].handle.assemble()
 
         mat.assemble()
+        mat.setOption(mat.Option.NEW_NONZERO_LOCATION_ERR, True)
         mat.setOption(mat.Option.IGNORE_ZERO_ENTRIES, True)
 
     def _init_nest(self):
@@ -711,14 +747,15 @@ class Mat(base.Mat):
     def _init_block(self):
         self._blocks = [[self]]
 
-        if (isinstance(self.sparsity._dsets[0], GlobalDataSet) or
-                isinstance(self.sparsity._dsets[1], GlobalDataSet)):
+        rset, cset = self.sparsity.dsets
+        if (isinstance(rset, GlobalDataSet) or
+                isinstance(cset, GlobalDataSet)):
             self._init_global_block()
             return
 
         mat = PETSc.Mat()
-        row_lg = self.sparsity.dsets[0].lgmap
-        col_lg = self.sparsity.dsets[1].lgmap
+        row_lg = rset.lgmap
+        col_lg = cset.lgmap
         rdim, cdim = self.dims[0][0]
 
         if rdim == cdim and rdim > 1 and self.sparsity._block_sparse:
@@ -737,9 +774,8 @@ class Mat(base.Mat):
                bsize=(rdim, cdim),
                comm=self.comm)
         mat.setLGMap(rmap=row_lg, cmap=col_lg)
-        # Do not stash entries destined for other processors, just drop them
-        # (we take care of those in the halo)
-        mat.setOption(mat.Option.IGNORE_OFF_PROC_ENTRIES, True)
+        # Stash entries destined for other processors
+        mat.setOption(mat.Option.IGNORE_OFF_PROC_ENTRIES, False)
         # Any add or insertion that would generate a new entry that has not
         # been preallocated will raise an error
         mat.setOption(mat.Option.NEW_NONZERO_ALLOCATION_ERR, True)
@@ -754,11 +790,11 @@ class Mat(base.Mat):
         # We completely fill the allocated matrix when zeroing the
         # entries, so raise an error if we "missed" one.
         mat.setOption(mat.Option.UNUSED_NONZERO_LOCATION_ERR, True)
-
         # Put zeros in all the places we might eventually put a value.
         with timed_region("MatZeroInitial"):
             sparsity.fill_with_zeros(mat, self.sparsity.dims[0][0], self.sparsity.maps, set_diag=self.sparsity._has_diagonal)
-
+        mat.assemble()
+        mat.setOption(mat.Option.NEW_NONZERO_LOCATION_ERR, True)
         # Now we've filled up our matrix, so the sparsity is
         # "complete", we can ignore subsequent zero entries.
         if not block_sparse:
@@ -773,7 +809,7 @@ class Mat(base.Mat):
                 isinstance(self.sparsity._dsets[1], GlobalDataSet)):
             # In this case both row and column are a Global.
 
-            mat = _GlobalMat()
+            mat = _GlobalMat(comm=self.comm)
         else:
             mat = _DatMat(self.sparsity)
         self.handle = mat
@@ -844,7 +880,7 @@ class Mat(base.Mat):
         The indices in ``rows`` should index the process-local rows of
         the matrix (no mapping to global indexes is applied).
         """
-        rows = np.asarray(rows, dtype=PETSc.IntType)
+        rows = np.asarray(rows, dtype=IntType)
         rbs, _ = self.dims[0][0]
         if len(rows) == 0:
             # No need to set anything if we didn't get any rows, but
@@ -877,6 +913,9 @@ class Mat(base.Mat):
         if self.assembly_state is not Mat.ASSEMBLED:
             self.handle.assemble()
             self.assembly_state = Mat.ASSEMBLED
+            # Mark blocks as assembled as well.
+            for m in self:
+                m.handle.assemble()
 
     def addto_values(self, rows, cols, values):
         """Add a block of values to the :class:`Mat`."""
@@ -915,8 +954,8 @@ class Mat(base.Mat):
 
 class ParLoop(base.ParLoop):
 
-    def log_flops(self):
-        PETSc.Log.logFlops(self.num_flops)
+    def log_flops(self, flops):
+        PETSc.Log.logFlops(flops)
 
 
 def _DatMat(sparsity, dat=None):
@@ -929,7 +968,7 @@ def _DatMat(sparsity, dat=None):
     else:
         raise ValueError("Not a DatMat")
 
-    A = PETSc.Mat().createPython(sizes)
+    A = PETSc.Mat().createPython(sizes, comm=sparsity.comm)
     A.setPythonContext(_DatMatPayload(sparsity, dat))
     A.setUp()
     return A
@@ -952,7 +991,7 @@ class _DatMatPayload(object):
         self.dset = dset
 
     def __getitem__(self, key):
-        shape = [s[0] if s[0] > 0 else 1 for s in self.sizes]
+        shape = [s[0] or 1 for s in self.sizes]
         return self.dat.data_ro.reshape(*shape)[key]
 
     def zeroEntries(self, mat):
@@ -1049,10 +1088,10 @@ class _DatMatPayload(object):
             return _DatMat(self.sparsity)
 
 
-def _GlobalMat(global_=None):
+def _GlobalMat(global_=None, comm=None):
     """A :class:`PETSc.Mat` with global size 1x1 implemented as a
     :class:`.Global`"""
-    A = PETSc.Mat().createPython(((None, 1), (None, 1)))
+    A = PETSc.Mat().createPython(((None, 1), (None, 1)), comm=comm)
     A.setPythonContext(_GlobalMatPayload(global_))
     A.setUp()
     return A
@@ -1080,7 +1119,7 @@ class _GlobalMatPayload(object):
 
     def mult(self, mat, x, result):
         if result.comm.rank == 0:
-            result.array[...] = self.global_.data_ro * x.array
+            result.array[...] = self.global_.data_ro * x.array_r
         else:
             result.array[...]
 
@@ -1098,6 +1137,6 @@ class _GlobalMatPayload(object):
 
     def duplicate(self, mat, copy=True):
         if copy:
-            return _GlobalMat(self.global_.duplicate())
+            return _GlobalMat(self.global_.duplicate(), comm=mat.comm)
         else:
-            return _GlobalMat()
+            return _GlobalMat(comm=mat.comm)

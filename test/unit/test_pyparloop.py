@@ -31,7 +31,6 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
 # OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from __future__ import absolute_import, print_function, division
 
 import pytest
 import numpy as np
@@ -149,7 +148,7 @@ class TestPyParLoop:
 
         expect = np.empty_like(d2.data)
         expect[:] = 10.0
-        expect[m12.values[subset.indices]] = d1.data[subset.indices]
+        expect[m12.values[subset.indices].reshape(-1)] = d1.data[subset.indices]
 
         assert np.allclose(d2.data, expect)
 

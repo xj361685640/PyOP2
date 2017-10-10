@@ -31,7 +31,6 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
 # OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from __future__ import absolute_import, print_function, division
 
 import pytest
 import numpy
@@ -376,6 +375,23 @@ void comp_vol(double A[1], double *x[], double *y[])
         op2.par_loop(op2.Kernel(k, 'k'),
                      dat.dataset.set, dat(op2.INC))
         assert numpy.allclose(dat.data[:], 1.0)
+
+    def test_extruded_layer_arg(self, elements, field_map, dat_f):
+        """Tests that the layer argument is being passed when prompted
+        to in the parloop."""
+
+        kernel_blah = """void kernel_blah(double* x[], int layer_arg){
+                                                 x[0][0] = layer_arg;
+                                              }\n"""
+
+        op2.par_loop(op2.Kernel(kernel_blah, "kernel_blah"),
+                     elements, dat_f(op2.WRITE, field_map),
+                     pass_layer_arg=True)
+        end = layers - 1
+        start = 0
+        ref = np.arange(start, end)
+        assert [dat_f.data[end*n:end*(n+1)] == ref
+                for n in range(len(dat_f.data) + 1)]
 
     def test_write_data_field(self, elements, dat_coords, dat_field, coords_map, field_map, dat_f):
         kernel_wo = "void kernel_wo(double* x[]) { x[0][0] = 42.0; }\n"

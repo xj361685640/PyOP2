@@ -31,15 +31,15 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
 # OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from __future__ import absolute_import, print_function, division
-import six
-from six.moves import input
 
 import os
 import subprocess
 import sys
 import ctypes
+import collections
 from hashlib import md5
+from distutils import version
+
 
 from pyop2.mpi import MPI, collective, COMM_WORLD
 from pyop2.configuration import configuration
@@ -57,7 +57,49 @@ def _check_hashes(x, y, datatype):
 _check_op = MPI.Op.Create(_check_hashes, commute=True)
 
 
+CompilerInfo = collections.namedtuple("CompilerInfo", ["compiler",
+                                                       "version"])
+
+
+def sniff_compiler_version(cc):
+    try:
+        ver = subprocess.check_output([cc, "--version"]).decode("utf-8")
+    except (subprocess.CalledProcessError, UnicodeDecodeError):
+        return CompilerInfo("unknown", version.LooseVersion("unknown"))
+
+    if ver.startswith("gcc"):
+        compiler = "gcc"
+    elif ver.startswith("clang"):
+        compiler = "clang"
+    elif ver.startswith("Apple LLVM"):
+        compiler = "clang"
+    elif ver.startswith("icc"):
+        compiler = "intel"
+    else:
+        compiler = "unknown"
+
+    ver = version.LooseVersion("unknown")
+    if compiler in ["gcc", "icc"]:
+        try:
+            # gcc-7 series only spits out patch level on dumpfullversion.
+            ver = subprocess.check_output([cc, "-dumpfullversion"]).decode("utf-8")
+            ver = version.StrictVersion(ver.strip())
+        except subprocess.CalledProcessError:
+            try:
+                ver = subprocess.check_output([cc, "-dumpversion"]).decode("utf-8")
+                ver = version.StrictVersion(ver.strip())
+            except (subprocess.CalledProcessError, UnicodeDecodeError):
+                pass
+        except UnicodeDecodeError:
+            pass
+
+    return CompilerInfo(compiler, ver)
+
+
 class Compiler(object):
+
+    compiler_versions = {}
+
     """A compiler for shared libraries.
 
     :arg cc: C compiler executable (can be overriden by exporting the
@@ -79,9 +121,33 @@ class Compiler(object):
         ccenv = 'CXX' if cpp else 'CC'
         self._cc = os.environ.get(ccenv, cc)
         self._ld = os.environ.get('LDSHARED', ld)
-        self._cppargs = cppargs + configuration['cflags'].split()
+        self._cppargs = cppargs + configuration['cflags'].split() + self.workaround_cflags
         self._ldargs = ldargs + configuration['ldflags'].split()
         self.comm = comm or COMM_WORLD
+
+    @property
+    def compiler_version(self):
+        try:
+            return Compiler.compiler_versions[self._cc]
+        except KeyError:
+            ver = sniff_compiler_version(self._cc)
+            return Compiler.compiler_versions.setdefault(self._cc, ver)
+
+    @property
+    def workaround_cflags(self):
+        """Flags to work around bugs in compilers."""
+        compiler, ver = self.compiler_version
+        if compiler == "gcc":
+            if version.StrictVersion("4.8.0") <= ver < version.StrictVersion("4.9.0"):
+                # GCC bug https://gcc.gnu.org/bugzilla/show_bug.cgi?id=61068
+                return ["-fno-ivopts"]
+            if version.StrictVersion("6.0.0") <= ver < version.StrictVersion("7.0.1"):
+                # GCC bug https://gcc.gnu.org/bugzilla/show_bug.cgi?id=79920
+                return ["-fno-tree-loop-vectorize"]
+            if version.StrictVersion("7.1.0") <= ver < version.StrictVersion("7.1.2"):
+                # GCC bug https://gcc.gnu.org/bugzilla/show_bug.cgi?id=81633
+                return ["-fno-tree-loop-vectorize"]
+        return []
 
     @collective
     def get_so(self, src, extension):
@@ -94,12 +160,12 @@ class Compiler(object):
         library."""
 
         # Determine cache key
-        hsh = md5(six.b(src))
-        hsh.update(six.b(self._cc))
+        hsh = md5(src.encode())
+        hsh.update(self._cc.encode())
         if self._ld:
-            hsh.update(six.b(self._ld))
-        hsh.update(six.b("".join(self._cppargs)))
-        hsh.update(six.b("".join(self._ldargs)))
+            hsh.update(self._ld.encode())
+        hsh.update("".join(self._cppargs).encode())
+        hsh.update("".join(self._ldargs).encode())
 
         basename = hsh.hexdigest()
 
@@ -253,11 +319,7 @@ class LinuxCompiler(Compiler):
     :kwarg comm: Optional communicator to compile the code on (only
     rank 0 compiles code) (defaults to COMM_WORLD)."""
     def __init__(self, cppargs=[], ldargs=[], cpp=False, comm=None):
-        # GCC 4.8.2 produces bad code with -fivopts (which O3 does by default).
-        # gcc.gnu.org/bugzilla/show_bug.cgi?id=61068
-        # This is the default in Ubuntu 14.04 so work around this
-        # problem by turning ivopts off.
-        opt_flags = ['-march=native', '-O3', '-fno-ivopts']
+        opt_flags = ['-march=native', '-O3']
         if configuration['debug']:
             opt_flags = ['-O0', '-g']
         cc = "mpicc"

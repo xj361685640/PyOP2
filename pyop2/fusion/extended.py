@@ -34,8 +34,6 @@
 """Classes for fusing parallel loops and for executing fused parallel loops,
 derived from ``base.py``."""
 
-from __future__ import absolute_import, print_function, division
-import six
 
 import sys
 import ctypes
@@ -103,7 +101,7 @@ class FusionArg(sequential.Arg):
         else:
             return super(FusionArg, self).c_vec_init(is_top, is_facet)
 
-    def c_kernel_arg(self, count, i=0, j=0, shape=(0,), layers=1):
+    def c_kernel_arg(self, count, i=0, j=0, shape=(0,)):
         if self.gather == 'postponed':
             if self._is_indirect:
                 c_args = "%s, %s" % (self.c_arg_name(i),
@@ -113,7 +111,7 @@ class FusionArg(sequential.Arg):
         elif self.gather == 'onlymap':
             c_args = "%s, %s" % (self.c_arg_name(i), self.c_vec_name())
         else:
-            c_args = super(FusionArg, self).c_kernel_arg(count, i, j, shape, layers)
+            c_args = super(FusionArg, self).c_kernel_arg(count, i, j, shape)
         if self.c_index:
             c_args += ", %s" % self.c_def_index()
         return c_args
@@ -221,7 +219,7 @@ class Kernel(sequential.Kernel, tuple):
         key = str(loop_chain_index)
         key += "".join([k.cache_key for k in kernels])
         key += str(hash(str(fused_ast)))
-        return md5(six.b(key)).hexdigest()
+        return md5(key.encode()).hexdigest()
 
     def _multiple_ast_to_c(self, kernels):
         """Glue together different ASTs (or strings) such that: ::
@@ -621,7 +619,7 @@ class TilingParLoop(ParLoop):
         for _globs, _args in zip(kwargs.get('reduced_globals', []), self._all_args):
             if not _globs:
                 continue
-            for i, glob in six.iteritems(_globs):
+            for i, glob in _globs.items():
                 shadow_glob = _args[i].data
                 for j, data in enumerate([a.data for a in args]):
                     if shadow_glob is data:
@@ -674,7 +672,7 @@ class TilingParLoop(ParLoop):
     def compute(self):
         """Execute the kernel over all members of the iteration space."""
         with timed_region("ParLoopChain: executor (%s)" % self._insp_name):
-            self.halo_exchange_begin()
+            self.global_to_local_begin()
             kwargs = {
                 'all_kernels': self._all_kernels,
                 'all_itspaces': self._all_itspaces,
@@ -687,7 +685,7 @@ class TilingParLoop(ParLoop):
             fun = TilingJITModule(self.kernel, self.it_space, *self.args, **kwargs)
             arglist = self.prepare_arglist(None, *self.args)
             self._compute(0, fun, *arglist)
-            self.halo_exchange_end()
+            self.global_to_local_end()
             self._compute(1, fun, *arglist)
             # Only meaningful if the user is enforcing tiling in presence of
             # global reductions

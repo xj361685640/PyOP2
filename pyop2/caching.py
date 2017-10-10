@@ -33,9 +33,6 @@
 
 """Provides common base classes for cached objects."""
 
-from __future__ import absolute_import, print_function, division
-import six
-
 from pyop2.utils import cached_property
 
 
@@ -60,7 +57,7 @@ def report_cache(typ):
     print("\n%d %s objects in caches" % (n, typ.__name__))
     print("Object breakdown")
     print("================")
-    for k, v in six.iteritems(typs):
+    for k, v in typs.items():
         mod = getmodule(k)
         if mod is not None:
             name = "%s.%s" % (mod.__name__, k.__name__)

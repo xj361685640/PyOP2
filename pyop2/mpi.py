@@ -33,8 +33,6 @@
 
 """PyOP2 MPI communicator."""
 
-from __future__ import absolute_import, print_function, division
-from six.moves import map, range
 
 from petsc4py import PETSc
 from mpi4py import MPI  # noqa
@@ -232,5 +230,6 @@ if COMM_WORLD.size > 1:
 
     def mpi_excepthook(typ, value, traceback):
         except_hook(typ, value, traceback)
+        sys.stderr.flush()
         COMM_WORLD.Abort(1)
     sys.excepthook = mpi_excepthook

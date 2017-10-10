@@ -31,8 +31,6 @@
 # ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED
 # OF THE POSSIBILITY OF SUCH DAMAGE.
 
-from __future__ import absolute_import, print_function, division
-from six.moves import range
 
 import pytest
 import numpy as np
@@ -47,9 +45,9 @@ from coffee.base import *
 nelems = 4096
 
 
-@pytest.fixture(params=[(nelems, nelems, nelems, nelems),
-                        (0, nelems, nelems, nelems),
-                        (nelems // 2, nelems, nelems, nelems)])
+@pytest.fixture(params=[(nelems, nelems, nelems),
+                        (0, nelems, nelems),
+                        (nelems // 2, nelems, nelems)])
 @pytest.fixture
 def iterset(request):
     return op2.Set(request.param, "iterset")

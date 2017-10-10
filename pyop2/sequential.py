@@ -32,13 +32,13 @@
 # OF THE POSSIBILITY OF SUCH DAMAGE.
 
 """OP2 sequential backend."""
-from __future__ import absolute_import, print_function, division
-from six.moves import range
 
-import os
-import ctypes
 from copy import deepcopy
+import os
 
+import ctypes
+
+from pyop2.datatypes import IntType, as_ctypes
 from pyop2 import base
 from pyop2 import compilation
 from pyop2 import petsc_base
@@ -46,12 +46,11 @@ from pyop2.base import par_loop                          # noqa: F401
 from pyop2.base import READ, WRITE, RW, INC, MIN, MAX    # noqa: F401
 from pyop2.base import ON_BOTTOM, ON_TOP, ON_INTERIOR_FACETS, ALL
 from pyop2.base import Map, MixedMap, DecoratedMap, Sparsity, Halo  # noqa: F401
-from pyop2.base import Set, ExtrudedSet, MixedSet, Subset, LocalSet  # noqa: F401
+from pyop2.base import Set, ExtrudedSet, MixedSet, Subset  # noqa: F401
 from pyop2.base import DatView                           # noqa: F401
 from pyop2.petsc_base import DataSet, MixedDataSet       # noqa: F401
 from pyop2.petsc_base import Global, GlobalDataSet       # noqa: F401
 from pyop2.petsc_base import Dat, MixedDat, Mat          # noqa: F401
-from pyop2.configuration import configuration
 from pyop2.exceptions import NameTypeError  # noqa: F401
 from pyop2.mpi import collective
 from pyop2.profiling import timed_region
@@ -220,6 +219,7 @@ class JITModule(base.JITModule):
         self._args = args
         self._direct = kwargs.get('direct', False)
         self._iteration_region = kwargs.get('iterate', ALL)
+        self._pass_layer_arg = kwargs.get('pass_layer_arg', False)
         # Copy the class variables, so we don't overwrite them
         self._cppargs = deepcopy(type(self)._cppargs)
         self._libraries = deepcopy(type(self)._libraries)
@@ -237,9 +237,8 @@ class JITModule(base.JITModule):
     def _wrapper_name(self):
         return 'wrap_%s' % self._kernel.name
 
-    @collective
-    def compile(self):
-        # If we weren't in the cache we /must/ have arguments
+    @cached_property
+    def code_to_compile(self):
         if not hasattr(self, '_args'):
             raise RuntimeError("JITModule has no args associated with it, should never happen")
 
@@ -257,23 +256,24 @@ class JITModule(base.JITModule):
                    'header': headers}
         else:
             kernel_code = """
-            %(header)s
-            %(code)s
+%(header)s
+%(code)s
             """ % {'code': self._kernel.code(),
                    'header': headers}
         code_to_compile = self.generate_wrapper()
 
         code_to_compile = """
-        #include <petsc.h>
-        #include <stdbool.h>
-        #include <math.h>
-        %(sys_headers)s
+#include <petsc.h>
+#include <stdbool.h>
+#include <math.h>
+#include <inttypes.h>
+%(sys_headers)s
 
-        %(kernel)s
+%(kernel)s
 
-        %(externc_open)s
-        %(wrapper)s
-        %(externc_close)s
+%(externc_open)s
+%(wrapper)s
+%(externc_close)s
         """ % {'kernel': kernel_code,
                'wrapper': code_to_compile,
                'externc_open': externc_open,
@@ -281,9 +281,15 @@ class JITModule(base.JITModule):
                'sys_headers': '\n'.join(self._kernel._headers + self._system_headers)}
 
         self._dump_generated_code(code_to_compile)
-        if configuration["debug"]:
-            self._wrapper_code = code_to_compile
+        return code_to_compile
 
+    @collective
+    def compile(self):
+        if not hasattr(self, '_args'):
+            raise RuntimeError("JITModule has no args associated with it, should never happen")
+
+        # If we weren't in the cache we /must/ have arguments
+        compiler = coffee.system.compiler
         extension = self._extension
         cppargs = self._cppargs
         cppargs += ["-I%s/include" % d for d in get_petsc_dir()] + \
@@ -298,13 +304,13 @@ class JITModule(base.JITModule):
 
         if self._kernel._cpp:
             extension = "cpp"
-        self._fun = compilation.load(code_to_compile,
+        self._fun = compilation.load(self.code_to_compile,
                                      extension,
                                      self._wrapper_name,
                                      cppargs=cppargs,
                                      ldargs=ldargs,
                                      argtypes=self._argtypes,
-                                     restype=None,
+                                     restype=ctypes.c_int,
                                      compiler=compiler.get('name'),
                                      comm=self.comm)
         # Blow away everything we don't need any more
@@ -315,7 +321,10 @@ class JITModule(base.JITModule):
         return self._fun
 
     def set_argtypes(self, iterset, *args):
-        argtypes = [ctypes.c_int, ctypes.c_int]
+        index_type = as_ctypes(IntType)
+        argtypes = [index_type, index_type]
+        if iterset.masks is not None:
+            argtypes.append(iterset.masks._argtype)
         if isinstance(iterset, Subset):
             argtypes.append(iterset._argtype)
         if iterset._extruded:
@@ -347,13 +356,14 @@ class ParLoop(petsc_base.ParLoop):
     @cached_property
     def _jitmodule(self):
         return JITModule(self.kernel, self.it_space, *self.args,
-                         direct=self.is_direct, iterate=self.iteration_region)
+                         direct=self.is_direct, iterate=self.iteration_region,
+                         pass_layer_arg=self._pass_layer_arg)
 
     @collective
     def _compute(self, part, fun, *arglist):
         with timed_region("ParLoop%s" % self.iterset.name):
             fun(part.offset, part.offset + part.size, *arglist)
-            self.log_flops()
+            self.log_flops(self.num_flops * part.size)
 
 
 def generate_cell_wrapper(itspace, args, forward_args=(), kernel_name=None, wrapper_name=None):
