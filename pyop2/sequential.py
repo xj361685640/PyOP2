@@ -77,7 +77,7 @@ class Arg(base.Arg):
 
     def c_arg_name(self, i=0, j=None):
         name = self.name
-        if self._is_indirect and not (self._is_vec_map or self._uses_itspace):
+        if self._is_indirect and self.idx and not self._is_vec_map:
             name = "%s_%d" % (name, self.idx)
         if i is not None:
             # For a mixed ParLoop we can't necessarily assume all arguments are
@@ -172,30 +172,25 @@ class Arg(base.Arg):
     def c_kernel_arg(self, count, i=0, j=0, shape=(0,)):
         if self._is_dat_view and not self._is_direct:
             raise NotImplementedError("Indirect DatView not implemented")
-        if self._uses_itspace:
-            if self._is_mat:
-                if self.data[i, j]._is_vector_field:
-                    return self.c_kernel_arg_name(i, j)
-                elif self.data[i, j]._is_scalar_field:
-                    return "(%(t)s (*)[%(dim)d])&%(name)s" % \
-                        {'t': self.ctype,
-                         'dim': shape[0],
-                         'name': self.c_kernel_arg_name(i, j)}
-                else:
-                    raise RuntimeError("Don't know how to pass kernel arg %s" % self)
-            else:
-                if self.data is not None and self.data.dataset._extruded:
-                    return self.c_ind_data_xtr("i_%d" % self.idx.index, i)
-                else:
-                    return self.c_ind_data("i_%d" % self.idx.index, i)
-        elif self._is_indirect:
-            if self._is_vec_map:
-                return self.c_vec_name()
-            return self.c_ind_data(self.idx, i)
-        elif self._is_global_reduction:
+        if self._is_global_reduction:
             return self.c_global_reduction_name(count)
-        elif isinstance(self.data, Global):
+        if isinstance(self.data, Global):
             return self.c_arg_name(i)
+        if self._is_mat:
+            if self.data[i, j]._is_vector_field:
+                return self.c_kernel_arg_name(i, j)
+            elif self.data[i, j]._is_scalar_field:
+                return "(%(t)s (*)[%(dim)d])&%(name)s" % \
+                    {'t': self.ctype,
+                     'dim': shape[0],
+                     'name': self.c_kernel_arg_name(i, j)}
+            else:
+                raise RuntimeError("Don't know how to pass kernel arg %s" % self)
+        if self.map:
+            if self.data.dataset._extruded:
+                return self.c_ind_data_xtr("i_0", i)
+            else:
+                return self.c_ind_data("i_0", i)
         else:
             if self._is_dat_view:
                 idx = "(%(idx)s + i * %(dim)s)" % {'idx': self.data[i].index,
@@ -204,6 +199,7 @@ class Arg(base.Arg):
                 idx = "(i * %(dim)s)" % {'dim': self.data[i].cdim}
             return "%(name)s + %(idx)s" % {'name': self.c_arg_name(i),
                                            'idx': idx}
+        raise NotImplementedError("Shouldn't execute this line")
 
     def c_vec_init(self, is_top, is_facet=False):
         is_top_init = is_top
@@ -228,8 +224,7 @@ class Arg(base.Arg):
                     vec_idx += 1
         return ";\n".join(val)
 
-    def c_addto(self, i, j, buf_name, tmp_name, tmp_decl,
-                extruded=None, is_facet=False):
+    def c_addto(self, i, j, buf_name, extruded=None, is_facet=False):
         maps = as_tuple(self.map, Map)
         nrows = maps[0].split[i].arity
         ncols = maps[1].split[j].arity
@@ -915,8 +910,8 @@ class ParLoop(petsc_base.ParLoop):
 def wrapper_snippets(iterset, args,
                      kernel_name=None, wrapper_name=None, user_code=None,
                      iteration_region=ALL, pass_layer_arg=False):
-    """Generates code snippets for the wrapper,
-    ready to be into a template.
+    """Generates code snippets for the wrapper, which can be inserted
+    into a code generation template.
 
     :param iterset: The iteration set.
     :param args: :class:`Arg`s of the :class:`ParLoop`
@@ -926,7 +921,7 @@ def wrapper_snippets(iterset, args,
     :param iteration_region: Iteration region, this is specified when
                              creating a :class:`ParLoop`.
 
-    :return: dict containing the code snippets
+    :return: Dictionary containing the code snippets
     """
 
     assert kernel_name is not None
@@ -935,10 +930,10 @@ def wrapper_snippets(iterset, args,
     if user_code is None:
         user_code = ""
 
-    direct = all(a.map is None for a in args)
+    direct = all(arg.map is None for arg in args)
 
-    def itspace_loop(i, d):
-        return "for (int i_%d=0; i_%d<%d; ++i_%d) {" % (i, i, d, i)
+    def simple_loop(idx, count):
+        return "for (int i_%d=0; i_%d<%d; ++i_%d) {" % (idx, idx, count, idx)
 
     def extrusion_loop():
         if direct:
@@ -954,12 +949,11 @@ def wrapper_snippets(iterset, args,
         _ssinds_arg = "%s* ssinds," % as_cstr(IntType)
         _index_expr = "ssinds[n]"
 
+    # wrapper function arguments
     _wrapper_args = ', '.join([arg.c_wrapper_arg() for arg in args])
-
-    # Pass in the is_facet flag to mark the case when it's an interior horizontal facet in
-    # an extruded mesh.
+    # Mat argument declarations
     _wrapper_decs = ';\n'.join([arg.c_wrapper_dec() for arg in args])
-
+    # vector declaration
     _vec_decs = ';\n'.join([arg.c_vec_dec(is_facet=is_facet) for arg in args if arg._is_vec_map])
 
     _intermediate_globals_decl = ';\n'.join(
@@ -1043,9 +1037,9 @@ def wrapper_snippets(iterset, args,
         _layer_decls = _layer_decls % {'idx0': idx0, 'idx1': idx1,
                                        'IntType': as_cstr(IntType)}
         _map_decl += ';\n'.join([arg.c_map_decl(is_facet=is_facet)
-                                 for arg in args if arg._uses_itspace])
+                                 for arg in args if arg.map])
         _map_init += ';\n'.join([arg.c_map_init(is_top=is_top, is_facet=is_facet)
-                                 for arg in args if arg._uses_itspace])
+                                 for arg in args if arg.map])
         if iterset.constant_layers:
             _map_bcs_m += ';\n'.join([arg.c_map_bcs("-", is_facet) for arg in args if arg._is_mat])
             _map_bcs_p += ';\n'.join([arg.c_map_bcs("+", is_facet) for arg in args if arg._is_mat])
@@ -1053,26 +1047,23 @@ def wrapper_snippets(iterset, args,
             _map_bcs_m += ';\n'.join([arg.c_map_bcs_variable("-", is_facet) for arg in args if arg._is_mat])
             _map_bcs_p += ';\n'.join([arg.c_map_bcs_variable("+", is_facet) for arg in args if arg._is_mat])
         _apply_offset += ';\n'.join([arg.c_add_offset_map(is_facet=is_facet)
-                                     for arg in args if arg._uses_itspace])
+                                     for arg in args if arg.map])
         _apply_offset += ';\n'.join([arg.c_add_offset(is_facet=is_facet)
                                      for arg in args if arg._is_vec_map])
         _extr_loop = '\n' + extrusion_loop()
         _extr_loop_close = '}\n'
 
-    # Build kernel invocation. Let X be a parameter of the kernel representing a
-    # tensor accessed in an iteration space. Let BUFFER be an array of the same
-    # size as X.  BUFFER is declared and intialized in the wrapper function.
-    # In particular, if:
-    # - X is written or incremented, then BUFFER is initialized to 0
-    # - X is read, then BUFFER gathers data expected by X
-    _buf_name, _tmp_decl, _tmp_name = {}, {}, {}
+    # Build kernel invocation.
+    # Declare and initialize BUFFER for parameter X of kernel.
+    # if X is written or incremented, then BUFFER is initialized to 0
+    # if X is read, then BUFFER gathers data expected by X
+    _buf_name = {}
     _buf_decl, _buf_gather, _buf_scatter, _addto = OrderedDict(), OrderedDict(), OrderedDict(), OrderedDict()
     for count, arg in enumerate(args):
-        if not arg._use_buffer:
-           continue
-
+        if not arg.map:
+            continue
+        # from IPython import embed; embed()
         _buf_name[arg] = "buffer_%s" % arg.c_arg_name(count)
-        _tmp_name[arg] = "tmp_%s" % _buf_name[arg]
         _buf_size = [m.arity for m in arg.map]
         if not arg._is_mat:
             # Readjust size to take into account the size of a vector space
@@ -1083,14 +1074,13 @@ def wrapper_snippets(iterset, args,
             _dat_size = arg.data.dims[0][0]  # TODO: [0][0] ?
             _buf_size = [e*d for e, d in zip(_buf_size, _dat_size)]
             _loop_size = [_buf_size[i]//_dat_size[i] for i in range(len(_buf_size))]
+
         _buf_decl[arg] = arg.c_buffer_decl(_buf_size, count, _buf_name[arg], is_facet=is_facet)
-        _tmp_decl[arg] = arg.c_buffer_decl(_buf_size, count, _tmp_name[arg], is_facet=is_facet,
-                                           init=False)
         if arg.access not in [WRITE, INC]:
             if is_facet:
-                _itspace_loops = '\n'.join(['  ' * n + itspace_loop(n, e) for n, e in enumerate(_loop_size)])
+                _itspace_loops = '\n'.join(['  ' * n + simple_loop(n, e*2) for n, e in enumerate(_loop_size)])
             else:
-                _itspace_loops = '\n'.join(['  ' * n + itspace_loop(n, e) for n, e in enumerate(_loop_size)])
+                _itspace_loops = '\n'.join(['  ' * n + simple_loop(n, e) for n, e in enumerate(_loop_size)])
             _buf_gather[arg] = arg.c_buffer_gather(_buf_size, count, _buf_name[arg])
             _itspace_loop_close = '\n'.join('  ' * n + '}' for n in range(len(_loop_size) - 1, -1, -1))
             _buf_gather[arg] = "\n".join([_itspace_loops, _buf_gather[arg], _itspace_loop_close])
@@ -1099,24 +1089,19 @@ def wrapper_snippets(iterset, args,
             if arg.access == WRITE:
                 raise NotImplementedError("Can only accumulate to matrices")
             if iterset._extruded:
-                _addto[arg] = arg.c_addto(0, 0, _buf_name[arg],
-                                          _tmp_name[arg],
-                                          _tmp_decl[arg],
-                                          "xtr_", is_facet=is_facet)
+                _addto[arg] = arg.c_addto(0, 0, _buf_name[arg], "xtr_", is_facet=is_facet)
             else:
-                _addto[arg] = arg.c_addto(0, 0, _buf_name[arg],
-                                          _tmp_name[arg],
-                                          _tmp_decl[arg])
+                _addto[arg] = arg.c_addto(0, 0, _buf_name[arg], is_facet=is_facet)
         else:
             # Vector scatter
-            _itspace_loops = '\n'.join(['  ' * n + itspace_loop(n, e) for n, e in enumerate(_loop_size)])
+            _itspace_loops = '\n'.join(['  ' * n + simple_loop(n, e) for n, e in enumerate(_loop_size)])
             _buf_scatter[arg] = arg.c_buffer_scatter(_buf_size, count, _buf_name[arg])
             _itspace_loop_close = '\n'.join('  ' * n + '}' for n in range(len(_loop_size) - 1, -1, -1))
             _buf_scatter[arg] = "\n".join([_itspace_loops, _buf_scatter[arg], _itspace_loop_close])
 
 
 
-    _kernel_args = ', '.join([arg.c_kernel_arg(count) if not arg._use_buffer else _buf_name[arg]
+    _kernel_args = ', '.join([arg.c_kernel_arg(count) if not arg.map else _buf_name[arg]
                               for count, arg in enumerate(args)])
 
     if pass_layer_arg:

@@ -269,8 +269,7 @@ class Arg(object):
         :param data: A data-carrying object, either :class:`Dat` or class:`Mat`
         :param map:  A :class:`Map` to access this :class:`Arg` or the default
                      if the identity map is to be used.
-        :param idx:  An index into the :class:`Map`: an :class:`IterationIndex`
-                     when using an iteration space, an :class:`int` to use a
+        :param idx:  An index into the :class:`Map`: an :class:`int` to use a
                      given component of the mapping or the default to use all
                      components of the mapping.
         :param access: An access descriptor of type :class:`Access`
@@ -305,8 +304,6 @@ class Arg(object):
             self._block_shape = tuple(tuple((mr.arity, mc.arity)
                                       for mc in map[1])
                                       for mr in map[0])
-        elif self._uses_itspace:
-            self._block_shape = tuple(((m.arity,),) for m in map)
         else:
             self._block_shape = None
 
@@ -464,14 +461,6 @@ class Arg(object):
     @cached_property
     def _is_indirect_reduction(self):
         return self._is_indirect and self._access is INC
-
-    @cached_property
-    def _use_buffer(self):
-        return self._is_mat or isinstance(self.idx, IterationIndex)
-
-    @cached_property
-    def _uses_itspace(self):
-        return self._is_mat or isinstance(self.idx, IterationIndex)
 
     @collective
     def global_to_local_begin(self):
@@ -725,6 +714,7 @@ class GlobalSet(Set):
 
     def __init__(self, comm=None):
         self.comm = dup_comm(comm)
+        self._extruded = False
 
     @cached_property
     def core_size(self):
@@ -1422,124 +1412,6 @@ class Halo(object, metaclass=abc.ABCMeta):
         :arg insert_mode: The insertion mode.
         """
         pass
-
-
-class IterationSpace(object):
-
-    """OP2 iteration space type.
-
-    .. Warning ::
-        User code should not directly instantiate :class:`IterationSpace`.
-        This class is only for internal use inside a
-        :func:`pyop2.op2.par_loop`."""
-
-    @validate_type(('iterset', Set, SetTypeError))
-    def __init__(self, iterset, block_shape=None):
-        self._iterset = iterset
-        self.comm = iterset.comm
-        if block_shape:
-            # Try the Mat case first
-            try:
-                self._extents = (sum(b[0][0] for b in block_shape),
-                                 sum(b[1] for b in block_shape[0]))
-            # Otherwise it's a Dat and only has one extent
-            except IndexError:
-                self._extents = (sum(b[0][0] for b in block_shape),)
-        else:
-            self._extents = ()
-        self._block_shape = block_shape or ((self._extents,),)
-
-    @cached_property
-    def iterset(self):
-        """The :class:`Set` over which this IterationSpace is defined."""
-        return self._iterset
-
-    @cached_property
-    def extents(self):
-        """Extents of the IterationSpace within each item of ``iterset``"""
-        return self._extents
-
-    @cached_property
-    def name(self):
-        """The name of the :class:`Set` over which this IterationSpace is
-        defined."""
-        return self._iterset.name
-
-    @cached_property
-    def core_size(self):
-        """The number of :class:`Set` elements which don't touch halo elements in the set
-        over which this IterationSpace is defined"""
-        return self._iterset.core_size
-
-    @cached_property
-    def size(self):
-        """The size of the :class:`Set` over which this IterationSpace is defined."""
-        return self._iterset.size
-
-    @cached_property
-    def total_size(self):
-        """The size of the :class:`Set` over which this IterationSpace
-        is defined, including halo elements."""
-        return self._iterset.total_size
-
-    @cached_property
-    def layers(self):
-        """Number of layers in the extruded set (or None if this is not an
-        extruded iteration space)
-        """
-        return self._iterset.layers
-
-    @cached_property
-    def _extruded(self):
-        return self._iterset._extruded
-
-    @cached_property
-    def partition_size(self):
-        """Default partition size"""
-        return self.iterset.partition_size
-
-    @cached_property
-    def _extent_ranges(self):
-        return [e for e in self.extents]
-
-    def __iter__(self):
-        """Yield all block shapes with their indices as i, j, shape, offsets
-        tuples."""
-        roffset = 0
-        for i, row in enumerate(self._block_shape):
-            coffset = 0
-            for j, shape in enumerate(row):
-                yield i, j, shape, (roffset, coffset)
-                if len(shape) > 1:
-                    coffset += shape[1]
-            if len(shape) > 0:
-                roffset += shape[0]
-
-    def __eq__(self, other):
-        """:class:`IterationSpace`s compare equal if they are defined on the
-        same :class:`Set` and have the same ``extent``."""
-        return self._iterset == other._iterset and self._extents == other._extents
-
-    def __ne__(self, other):
-        """:class:`IterationSpace`s compare equal if they are defined on the
-        same :class:`Set` and have the same ``extent``."""
-        return not self == other
-
-    def __hash__(self):
-        return hash((self._iterset, self._extents))
-
-    def __str__(self):
-        return "OP2 Iteration Space: %s with extents %s" % (self._iterset, self._extents)
-
-    def __repr__(self):
-        return "IterationSpace(%r, %r)" % (self._iterset, self._extents)
-
-    @cached_property
-    def cache_key(self):
-        """Cache key used to uniquely identify the object in the cache."""
-        return self._extents, self._block_shape, self.iterset._extruded, \
-            (self.iterset._extruded and self.iterset.constant_layers), \
-            isinstance(self._iterset, Subset)
 
 
 class DataCarrier(object):
@@ -2757,47 +2629,6 @@ class Global(DataCarrier, _EmptyDataMixin):
         return self._iop(other, operator.itruediv)
 
 
-class IterationIndex(object):
-
-    """OP2 iteration space index
-
-    Users should not directly instantiate :class:`IterationIndex` objects. Use
-    ``op2.i`` instead."""
-
-    def __init__(self, index=None):
-        assert index is None or isinstance(index, int), "i must be an int"
-        self._index = index
-
-    def __str__(self):
-        return "OP2 IterationIndex: %s" % self._index
-
-    def __repr__(self):
-        return "IterationIndex(%r)" % self._index
-
-    @property
-    def index(self):
-        """Return the integer value of this index."""
-        return self._index
-
-    def __getitem__(self, idx):
-        return IterationIndex(idx)
-
-    # This is necessary so that we can convert an IterationIndex to a
-    # tuple.  Because, __getitem__ returns a new IterationIndex
-    # we have to explicitly provide an iterable interface
-    def __iter__(self):
-        """Yield self when iterated over."""
-        yield self
-
-
-i = IterationIndex()
-"""Shorthand for constructing :class:`IterationIndex` objects.
-
-``i[idx]`` builds an :class:`IterationIndex` object for which the `index`
-property is `idx`.
-"""
-
-
 class _MapArg(object):
 
     def __init__(self, map, idx):
@@ -2824,10 +2655,6 @@ class Map(object):
       kernel.
     * An integer: ``some_map[n]``. The ``n`` th entry of the
       map result will be passed to the kernel.
-    * An :class:`IterationIndex`, ``some_map[pyop2.i[n]]``. ``n``
-      will take each value from ``0`` to ``e-1`` where ``e`` is the
-      ``n`` th extent passed to the iteration space for this
-      :func:`pyop2.op2.par_loop`. See also :data:`i`.
 
 
     For extruded problems (where ``iterset`` is an
@@ -2877,7 +2704,7 @@ class Map(object):
             struct.indices = self.indices.ctypes.data
             return ctypes.pointer(struct)
 
-    @validate_type(('index', (int, IterationIndex), IndexTypeError))
+    @validate_type(('index', int, IndexTypeError))
     def __getitem__(self, index):
         if configuration["type_check"]:
             if isinstance(index, int) and not (0 <= index < self.arity):
@@ -3918,10 +3745,7 @@ class JITModule(Cached):
             if arg._is_global:
                 key += (arg.data.dim, arg.data.dtype, arg.access)
             elif arg._is_dat:
-                if isinstance(arg.idx, IterationIndex):
-                    idx = (arg.idx.__class__, arg.idx.index)
-                else:
-                    idx = arg.idx
+                idx = arg.idx
                 map_arity = arg.map and (tuplify(arg.map.offset) or arg.map.arity)
                 if arg._is_dat_view:
                     view_idx = arg.data.index
@@ -3930,8 +3754,6 @@ class JITModule(Cached):
                 key += (arg.data.dim, arg.data.dtype, map_arity,
                         idx, view_idx, arg.access)
             elif arg._is_mat:
-                idxs = (arg.idx[0].__class__, arg.idx[0].index,
-                        arg.idx[1].index)
                 map_arities = (tuplify(arg.map[0].offset) or arg.map[0].arity,
                                tuplify(arg.map[1].offset) or arg.map[1].arity)
                 # Implicit boundary conditions (extruded "top" or
@@ -3939,7 +3761,7 @@ class JITModule(Cached):
                 # to be part of cache key
                 map_bcs = (arg.map[0].implicit_bcs, arg.map[1].implicit_bcs)
                 map_cmpts = (arg.map[0].vector_index, arg.map[1].vector_index)
-                key += (arg.data.dims, arg.data.dtype, idxs,
+                key += (arg.data.dims, arg.data.dtype, arg.idx,
                         map_arities, map_bcs, map_cmpts, arg.access)
 
         iterate = kwargs.get("iterate", None)
@@ -4081,9 +3903,6 @@ class ParLoop(LazyComputation):
         fundecl = kernel._attached_info['fundecl']
         attached = kernel._attached_info['attached']
         if fundecl and not attached:
-            for arg, f_arg in zip(self._actual_args, fundecl.args):
-                if arg._uses_itspace and arg._is_INC:
-                    f_arg.pragma = set([ast.WRITE])
             kernel._attached_info['attached'] = True
         self.arglist = self.prepare_arglist(iterset, *self.args)
 
