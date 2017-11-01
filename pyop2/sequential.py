@@ -599,7 +599,7 @@ for ( int i = 0; i < %(dim)s; i++ ) %(combine)s;
         return ";\n".join(["*(%(ind)s%(ofs)s) %(op)s %(name)s[i_0*%(dim)d%(ofs)s];\n" %
                            {"name": buf_name,
                             "dim": dim,
-                            "op": "=" if self.access == WRITE else "+=",
+                            "op": "+=" if self.access == INC else "=",
                             "ind": self.c_kernel_arg(idx),
                             "ofs": " + %s" % j if j else ""} for j in range(dim)])
 
@@ -608,7 +608,7 @@ for ( int i = 0; i < %(dim)s; i++ ) %(combine)s;
         dim = self.data.split[i].cdim
         return ";\n".join(["*(%(ind)s%(nfofs)s) %(op)s %(name)s[i_0*%(dim)d%(nfofs)s%(mxofs)s]" %
                            {"ind": self.c_kernel_arg(count, i, j),
-                            "op": "=" if self.access == WRITE else "+=",
+                            "op": "+=" if self.access == INC else "=",
                             "name": buf_name,
                             "dim": dim,
                             "nfofs": " + %d" % o if o else "",
@@ -1076,7 +1076,7 @@ def wrapper_snippets(iterset, args,
             _loop_size = [_buf_size[i]//_dat_size[i] for i in range(len(_buf_size))]
 
         _buf_decl[arg] = arg.c_buffer_decl(_buf_size, count, _buf_name[arg], is_facet=is_facet)
-        if arg.access not in [WRITE, INC]:
+        if arg.access in [READ, RW, MIN, MAX]:
             if is_facet:
                 _itspace_loops = '\n'.join(['  ' * n + simple_loop(n, e*2) for n, e in enumerate(_loop_size)])
             else:
@@ -1084,22 +1084,20 @@ def wrapper_snippets(iterset, args,
             _buf_gather[arg] = arg.c_buffer_gather(_buf_size, count, _buf_name[arg])
             _itspace_loop_close = '\n'.join('  ' * n + '}' for n in range(len(_loop_size) - 1, -1, -1))
             _buf_gather[arg] = "\n".join([_itspace_loops, _buf_gather[arg], _itspace_loop_close])
-        elif arg._is_mat:
-            # Mat increment
-            if arg.access == WRITE:
-                raise NotImplementedError("Can only accumulate to matrices")
-            if iterset._extruded:
-                _addto[arg] = arg.c_addto(0, 0, _buf_name[arg], "xtr_", is_facet=is_facet)
+        if arg.access in [WRITE, RW, MIN, MAX, INC]:
+            if arg._is_mat:
+                if arg.access != INC:
+                    raise NotImplementedError("Can only accumulate to matrices")
+                if iterset._extruded:
+                    _addto[arg] = arg.c_addto(0, 0, _buf_name[arg], "xtr_", is_facet=is_facet)
+                else:
+                    _addto[arg] = arg.c_addto(0, 0, _buf_name[arg], is_facet=is_facet)
             else:
-                _addto[arg] = arg.c_addto(0, 0, _buf_name[arg], is_facet=is_facet)
-        else:
-            # Vector scatter
-            _itspace_loops = '\n'.join(['  ' * n + simple_loop(n, e) for n, e in enumerate(_loop_size)])
-            _buf_scatter[arg] = arg.c_buffer_scatter(_buf_size, count, _buf_name[arg])
-            _itspace_loop_close = '\n'.join('  ' * n + '}' for n in range(len(_loop_size) - 1, -1, -1))
-            _buf_scatter[arg] = "\n".join([_itspace_loops, _buf_scatter[arg], _itspace_loop_close])
-
-
+                # Vector scatter
+                _itspace_loops = '\n'.join(['  ' * n + simple_loop(n, e) for n, e in enumerate(_loop_size)])
+                _buf_scatter[arg] = arg.c_buffer_scatter(_buf_size, count, _buf_name[arg])
+                _itspace_loop_close = '\n'.join('  ' * n + '}' for n in range(len(_loop_size) - 1, -1, -1))
+                _buf_scatter[arg] = "\n".join([_itspace_loops, _buf_scatter[arg], _itspace_loop_close])
 
     _kernel_args = ', '.join([arg.c_kernel_arg(count) if not arg.map else _buf_name[arg]
                               for count, arg in enumerate(args)])

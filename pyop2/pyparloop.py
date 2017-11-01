@@ -106,7 +106,7 @@ class ParLoop(base.ParLoop):
     def _compute(self, part, *arglist):
         if part.set._extruded:
             raise NotImplementedError
-        subset = isinstance(self._it_space._iterset, base.Subset)
+        subset = isinstance(self.iterset, base.Subset)
 
         def arrayview(array, access):
             array = array.view()
@@ -117,7 +117,7 @@ class ParLoop(base.ParLoop):
         for e in range(part.offset, part.offset + part.size):
             args = []
             if subset:
-                idx = self._it_space._iterset._indices[e]
+                idx = self.iterset._indices[e]
             else:
                 idx = e
             for arg in self.args:
@@ -126,8 +126,6 @@ class ParLoop(base.ParLoop):
                 elif arg._is_direct:
                     args.append(arrayview(arg.data._data[idx, ...], arg.access))
                 elif arg._is_indirect:
-                    if isinstance(arg.idx, base.IterationIndex):
-                        raise NotImplementedError
                     if arg._is_vec_map:
                         args.append(arrayview(arg.data._data[arg.map.values_with_halo[idx], ...], arg.access))
                     else:
