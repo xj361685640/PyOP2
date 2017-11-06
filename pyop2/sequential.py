@@ -1062,7 +1062,6 @@ def wrapper_snippets(iterset, args,
     for count, arg in enumerate(args):
         if not arg.map:
             continue
-        # from IPython import embed; embed()
         _buf_name[arg] = "buffer_%s" % arg.c_arg_name(count)
         _buf_size = [m.arity for m in arg.map]
         if not arg._is_mat:
@@ -1094,7 +1093,10 @@ def wrapper_snippets(iterset, args,
                     _addto[arg] = arg.c_addto(0, 0, _buf_name[arg], is_facet=is_facet)
             else:
                 # Vector scatter
-                _itspace_loops = '\n'.join(['  ' * n + simple_loop(n, e) for n, e in enumerate(_loop_size)])
+                if is_facet:
+                    _itspace_loops = '\n'.join(['  ' * n + simple_loop(n, e*2) for n, e in enumerate(_loop_size)])
+                else:
+                    _itspace_loops = '\n'.join(['  ' * n + simple_loop(n, e) for n, e in enumerate(_loop_size)])
                 _buf_scatter[arg] = arg.c_buffer_scatter(_buf_size, count, _buf_name[arg])
                 _itspace_loop_close = '\n'.join('  ' * n + '}' for n in range(len(_loop_size) - 1, -1, -1))
                 _buf_scatter[arg] = "\n".join([_itspace_loops, _buf_scatter[arg], _itspace_loop_close])
