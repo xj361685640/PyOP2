@@ -81,9 +81,18 @@ def sniff_compiler_version(cc):
     ver = version.LooseVersion("unknown")
     if compiler in ["gcc", "icc"]:
         try:
-            ver = subprocess.check_output([cc, "-dumpversion"]).decode("utf-8")
+            # gcc-7 series only spits out patch level on dumpfullversion.
+            ver = subprocess.check_output([cc, "-dumpfullversion"],
+                                          stderr=subprocess.DEVNULL).decode("utf-8")
             ver = version.StrictVersion(ver.strip())
-        except (subprocess.CalledProcessError, UnicodeDecodeError):
+        except subprocess.CalledProcessError:
+            try:
+                ver = subprocess.check_output([cc, "-dumpversion"],
+                                              stderr=subprocess.DEVNULL).decode("utf-8")
+                ver = version.StrictVersion(ver.strip())
+            except (subprocess.CalledProcessError, UnicodeDecodeError):
+                pass
+        except UnicodeDecodeError:
             pass
 
     return CompilerInfo(compiler, ver)
