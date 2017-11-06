@@ -334,43 +334,7 @@ class ParLoop(sequential.ParLoop):
 class FusionParLoop(ParLoop):
 
     def __init__(self, kernel, iterset, *args, **kwargs):
-        self._it_space = kwargs['it_space']
         super(FusionParLoop, self).__init__(kernel, iterset, *args, **kwargs)
-
-    def _build_itspace(self, iterset):
-        """
-        Bypass the construction of a new iteration space.
-
-        This avoids type checking in base.ParLoop._build_itspace, which would
-        return an error when the fused loop accesses arguments that are not
-        accessed by the base loop.
-        """
-        return self._it_space
-
-
-# API for tiled parallel loops
-
-class TilingIterationSpace(base.IterationSpace):
-
-    """A simple bag of :class:`IterationSpace` objects for a sequence of tiled
-    parallel loops."""
-
-    def __init__(self, all_itspaces):
-        self._iterset = [i._iterset for i in all_itspaces]
-        self._extents = [i._extents for i in all_itspaces]
-        self._block_shape = [i._block_shape for i in all_itspaces]
-        assert all(all_itspaces[0].comm == i.comm for i in all_itspaces)
-        self.comm = all_itspaces[0].comm
-
-    def __str__(self):
-        output = "OP2 Fused Iteration Space:"
-        output += "\n  ".join(["%s with extents %s" % (i._iterset, i._extents)
-                               for i in self.iterset])
-        return output
-
-    def __repr__(self):
-        return "\n".join(["IterationSpace(%r, %r)" % (i._iterset, i._extents)
-                          for i in self.iterset])
 
 
 class TilingJITModule(sequential.JITModule):

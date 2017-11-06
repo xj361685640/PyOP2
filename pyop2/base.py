@@ -2709,8 +2709,6 @@ class Map(object):
         if configuration["type_check"]:
             if isinstance(index, int) and not (0 <= index < self.arity):
                 raise IndexValueError("Index must be in interval [0,%d]" % (self._arity - 1))
-            if isinstance(index, IterationIndex) and index.index not in [0, 1]:
-                raise IndexValueError("IterationIndex must be in interval [0,1]")
         return _MapArg(self, index)
 
     # This is necessary so that we can convert a Map to a tuple
