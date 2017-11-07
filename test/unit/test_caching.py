@@ -460,12 +460,12 @@ void kernel_swap(unsigned int* x, unsigned int* y)
         assert len(self.cache) == 0
 
         kernel_swap = """
-void kernel_swap(unsigned int* x[2])
+void kernel_swap(unsigned int* x)
 {
   unsigned int t;
-  t = x[0][0];
-  x[0][0] = x[0][1];
-  x[0][1] = t;
+  t = x[0];
+  x[0] = x[1];
+  x[1] = t;
 }
 """
 
@@ -511,13 +511,13 @@ void kernel_swap(unsigned int* x[2])
         k = op2.Kernel(kernel_code, 'k')
 
         op2.par_loop(k, iterset,
-                     x2(op2.INC, iter2ind2[op2.i[0]]))
+                     x2(op2.INC, iter2ind2[0]))
 
         base._trace.evaluate(set([x2]), set())
         assert len(self.cache) == 1
 
         op2.par_loop(k, iterset,
-                     x2(op2.INC, iter2ind2[op2.i[0]]))
+                     x2(op2.INC, iter2ind2[0]))
 
         base._trace.evaluate(set([x2]), set())
         assert len(self.cache) == 1

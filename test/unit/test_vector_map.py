@@ -126,8 +126,8 @@ class TestVectorMap:
         edge2node = op2.Map(edges, nodes, 2, e_map, "edge2node")
 
         kernel_sum = """
-void kernel_sum(unsigned int* nodes[1], unsigned int *edge)
-{ *edge = nodes[0][0] + nodes[1][0]; }
+void kernel_sum(unsigned int* nodes, unsigned int *edge)
+{ *edge = nodes[0] + nodes[1]; }
 """
 
         op2.par_loop(op2.Kernel(kernel_sum, "kernel_sum"), edges,
@@ -141,8 +141,8 @@ void kernel_sum(unsigned int* nodes[1], unsigned int *edge)
     def test_read_1d_vector_map(self, node, d1, vd1, node2ele):
         vd1.data[:] = numpy.arange(nele)
         k = """
-        void k(int *d, int *vd[1]) {
-        *d = vd[0][0];
+        void k(int *d, int *vd) {
+        *d = vd[0];
         }"""
         op2.par_loop(op2.Kernel(k, 'k'), node,
                      d1(op2.WRITE),
@@ -152,8 +152,8 @@ void kernel_sum(unsigned int* nodes[1], unsigned int *edge)
 
     def test_write_1d_vector_map(self, node, vd1, node2ele):
         k = """
-        void k(int *vd[1]) {
-        vd[0][0] = 2;
+        void k(int *vd) {
+        vd[0] = 2;
         }
         """
 
@@ -166,8 +166,8 @@ void kernel_sum(unsigned int* nodes[1], unsigned int *edge)
         d1.data[:] = numpy.arange(nnodes).reshape(d1.data.shape)
 
         k = """
-        void k(int *d, int *vd[1]) {
-        vd[0][0] += *d;
+        void k(int *d, int *vd) {
+        vd[0] += *d;
         }"""
         op2.par_loop(op2.Kernel(k, 'k'), node,
                      d1(op2.READ),
@@ -183,9 +183,9 @@ void kernel_sum(unsigned int* nodes[1], unsigned int *edge)
     def test_read_2d_vector_map(self, node, d2, vd2, node2ele):
         vd2.data[:] = numpy.arange(nele * 2).reshape(nele, 2)
         k = """
-        void k(int *d, int *vd[2]) {
-        d[0] = vd[0][0];
-        d[1] = vd[0][1];
+        void k(int *d, int *vd) {
+        d[0] = vd[0];
+        d[1] = vd[1];
         }"""
         op2.par_loop(op2.Kernel(k, 'k'), node,
                      d2(op2.WRITE),
@@ -197,9 +197,9 @@ void kernel_sum(unsigned int* nodes[1], unsigned int *edge)
 
     def test_write_2d_vector_map(self, node, vd2, node2ele):
         k = """
-        void k(int *vd[2]) {
-        vd[0][0] = 2;
-        vd[0][1] = 3;
+        void k(int *vd) {
+        vd[0] = 2;
+        vd[1] = 3;
         }
         """
 
@@ -214,9 +214,9 @@ void kernel_sum(unsigned int* nodes[1], unsigned int *edge)
         d2.data[:] = numpy.arange(2 * nnodes).reshape(d2.data.shape)
 
         k = """
-        void k(int *d, int *vd[2]) {
-        vd[0][0] += d[0];
-        vd[0][1] += d[1];
+        void k(int *d, int *vd) {
+        vd[0] += d[0];
+        vd[1] += d[1];
         }"""
         op2.par_loop(op2.Kernel(k, 'k'), node,
                      d2(op2.READ),

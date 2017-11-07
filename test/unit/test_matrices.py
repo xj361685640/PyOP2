@@ -630,7 +630,7 @@ class TestMatrices:
         mat = op2.Mat(sparsity, np.float64)
         kernel = op2.Kernel(zero_mat_code, "zero_mat")
         op2.par_loop(kernel, set,
-                     mat(op2.WRITE, (map[op2.i[0]], map[op2.i[1]])))
+                     mat(op2.WRITE, (map[0], map[0])))
 
         mat.assemble()
         expected_matrix = np.zeros((nelems, nelems), dtype=np.float64)

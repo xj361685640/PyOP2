@@ -124,14 +124,6 @@ class TestIndirectLoop:
             op2.par_loop(op2.Kernel("", "dummy"), iterset,
                          x(op2.WRITE, op2.Map(iterset, op2.Set(nelems), 1)))
 
-    def test_mismatching_itspace(self, iterset, iterset2indset, iterset2indset2, x):
-        """par_loop arguments using an IterationIndex must use a local
-        iteration space of the same extents."""
-        with pytest.raises(IndexValueError):
-            op2.par_loop(op2.Kernel("", "dummy"), iterset,
-                         x(op2.WRITE, iterset2indset[op2.i[0]]),
-                         x(op2.WRITE, iterset2indset2[op2.i[0]]))
-
     def test_uninitialized_map(self, iterset, indset, x):
         """Accessing a par_loop argument via an uninitialized Map should raise
         an exception."""
@@ -213,12 +205,11 @@ class TestIndirectLoop:
         edge2node = op2.Map(edges, nodes, 2, e_map, "edge2node")
 
         kernel_sum = """
-        void kernel_sum(unsigned int *nodes1, unsigned int *nodes2, unsigned int *edge) {
-          *edge = *nodes1 + *nodes2;
+        void kernel_sum(unsigned int *nodes, unsigned int *edge) {
+          edge[0] = nodes[0] + nodes[1];
         }"""
         op2.par_loop(op2.Kernel(kernel_sum, "kernel_sum"), edges,
-                     node_vals(op2.READ, edge2node[0]),
-                     node_vals(op2.READ, edge2node[1]),
+                     node_vals(op2.READ, edge2node),
                      edge_vals(op2.WRITE))
 
         expected = np.arange(1, nedges * 2 + 1, 2)

@@ -201,7 +201,7 @@ class Arg(base.Arg):
             else:
                 raise RuntimeError("Don't know how to pass kernel arg %s" % self)
         if self.map:
-            if self.data.dataset._extruded:
+            if self.map.iterset._extruded:
                 return self.c_ind_data_xtr("i_0", i)
             else:
                 return self.c_ind_data("i_0", i)
@@ -1118,8 +1118,6 @@ def wrapper_snippets(iterset, args,
             _buf_gather[arg] = "\n".join([_itspace_loops, _buf_gather[arg], _itspace_loop_close])
         if arg.access in [WRITE, RW, MIN, MAX, INC]:
             if arg._is_mat:
-                if arg.access != INC:
-                    raise NotImplementedError("Can only accumulate to matrices")
                 if iterset._extruded:
                     _addto[arg] = arg.c_addto(0, 0, _buf_name[arg], "xtr_", is_facet=is_facet)
                 else:
