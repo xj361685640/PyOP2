@@ -37,7 +37,7 @@ import numpy as np
 import random
 
 from pyop2 import op2
-from pyop2.exceptions import MapValueError, IndexValueError
+from pyop2.exceptions import MapValueError
 
 from coffee.base import *
 

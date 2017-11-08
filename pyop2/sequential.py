@@ -120,12 +120,11 @@ class Arg(base.Arg):
                              for i in range(len(self.data))])
         if self._is_indirect or self._is_mat:
             for i, map in enumerate(as_tuple(self.map, Map)):
-                if map is not None:
-                    for j, m in enumerate(map):
-                        val += ", %s *%s" % (as_cstr(IntType), self.c_map_name(i, j))
-                        # boundary masks for variable layer extrusion
-                        if m.iterset._extruded and not m.iterset.constant_layers and m.implicit_bcs:
-                            val += ", struct MapMask *%s_mask" % self.c_map_name(i, j)
+                for j, m in enumerate(map):
+                    val += ", %s *%s" % (as_cstr(IntType), self.c_map_name(i, j))
+                    # boundary masks for variable layer extrusion
+                    if m.iterset._extruded and not m.iterset.constant_layers and m.implicit_bcs:
+                        val += ", struct MapMask *%s_mask" % self.c_map_name(i, j)
         return val
 
     def c_vec_dec(self, is_facet=False):
@@ -140,7 +139,7 @@ class Arg(base.Arg):
                 {'type': self.ctype,
                  'vec_name': self.c_vec_name()}
 
-    def c_wrapper_dec(self):
+    def c_mat_dec(self):
         val = ""
         if self._is_mixed_mat:
             rows, cols = self.data.sparsity.shape
@@ -634,7 +633,6 @@ for ( int i = 0; i < %(dim)s; i++ ) %(combine)s;
                             "ind": self.c_kernel_arg(idx),
                             "ofs": " + %s" % j if j else ""} for j in range(dim)])
 
-
     def c_buffer_scatter_vec(self, count, i, j, mxofs, buf_name):
         dim = self.data.split[i].cdim
         return ";\n".join(["*(%(ind)s%(nfofs)s) %(op)s %(name)s[i_0*%(dim)d%(nfofs)s%(mxofs)s]" %
@@ -695,7 +693,8 @@ PetscErrorCode %(wrapper_name)s(int start,
                       %(layer_arg)s) {
   PetscErrorCode ierr;
   %(user_code)s
-  %(wrapper_decs)s;
+  %(mat_decs)s;
+  %(offset_decs)s;
   %(map_decl)s
   %(vec_decs)s;
   %(get_mask_indices)s;
@@ -723,7 +722,6 @@ PetscErrorCode %(wrapper_name)s(int start,
     _cppargs = []
     _libraries = []
     _system_headers = []
-    _extension = 'c'
 
     def __init__(self, kernel, iterset, *args, **kwargs):
         """
@@ -746,6 +744,10 @@ PetscErrorCode %(wrapper_name)s(int start,
             return
         self.comm = iterset.comm
         self._kernel = kernel
+        if kernel._cpp:
+            self._extension = 'cpp'
+        else:
+            self._extension = 'c'
         self._fun = None
         self._code_dict = None
         self._iterset = iterset
@@ -753,10 +755,6 @@ PetscErrorCode %(wrapper_name)s(int start,
         self._direct = kwargs.get('direct', False)
         self._iteration_region = kwargs.get('iterate', ALL)
         self._pass_layer_arg = kwargs.get('pass_layer_arg', False)
-        # Copy the class variables, so we don't overwrite them
-        self._cppargs = dcopy(type(self)._cppargs)
-        self._libraries = dcopy(type(self)._libraries)
-        self._system_headers = dcopy(type(self)._system_headers)
         self.set_argtypes(iterset, *args)
         if not kwargs.get('delay', False):
             self.compile()
@@ -823,22 +821,19 @@ PetscErrorCode %(wrapper_name)s(int start,
 
         # If we weren't in the cache we /must/ have arguments
         compiler = coffee.system.compiler
-        extension = self._extension
-        cppargs = self._cppargs
-        cppargs += ["-I%s/include" % d for d in get_petsc_dir()] + \
-                   ["-I%s" % d for d in self._kernel._include_dirs] + \
-                   ["-I%s" % os.path.abspath(os.path.dirname(__file__))]
+        cppargs = self._cppargs + \
+                  ["-I%s/include" % d for d in get_petsc_dir()] + \
+                  ["-I%s" % d for d in self._kernel._include_dirs] + \
+                  ["-I%s" % os.path.abspath(os.path.dirname(__file__))]
         if compiler:
             cppargs += [compiler[coffee.system.isa['inst_set']]]
-        ldargs = ["-L%s/lib" % d for d in get_petsc_dir()] + \
+        ldargs = self._libraries + self._kernel._ldargs + \
+                 ["-L%s/lib" % d for d in get_petsc_dir()] + \
                  ["-Wl,-rpath,%s/lib" % d for d in get_petsc_dir()] + \
-                 ["-lpetsc", "-lm"] + self._libraries
-        ldargs += self._kernel._ldargs
+                 ["-lpetsc", "-lm"]
 
-        if self._kernel._cpp:
-            extension = "cpp"
         self._fun = compilation.load(self.code_to_compile,
-                                     extension,
+                                     self._extension,
                                      self._wrapper_name,
                                      cppargs=cppargs,
                                      ldargs=ldargs,
@@ -864,8 +859,8 @@ PetscErrorCode %(wrapper_name)s(int start,
 
     def set_argtypes(self, iterset, *args):
         index_type = as_ctypes(IntType)
-        argtypes = [index_type, index_type]
-        if iterset.masks is not None:
+        argtypes = [index_type, index_type]  # start, end
+        if iterset.masks:
             argtypes.append(iterset.masks._argtype)
         if isinstance(iterset, Subset):
             argtypes.append(iterset._argtype)
@@ -873,23 +868,20 @@ PetscErrorCode %(wrapper_name)s(int start,
             if arg._is_mat:
                 argtypes.append(arg.data._argtype)
             else:
-                for d in arg.data:
-                    argtypes.append(d._argtype)
+                argtypes.extend([d._argtype for d in arg.data])
             if arg._is_indirect or arg._is_mat:
-                maps = as_tuple(arg.map, Map)
-                for map in maps:
-                    if map is not None:
-                        for m in map:
-                            argtypes.append(m._argtype)
-                            if m.iterset._extruded and not m.iterset.constant_layers:
-                                method = None
-                                for location, method_ in m.implicit_bcs:
-                                    if method is None:
-                                        method = method_
-                                    else:
-                                        assert method == method_, "Mixed implicit bc methods not supported"
-                                if method is not None:
-                                    argtypes.append(m.boundary_masks[method]._argtype)
+                for map in as_tuple(arg.map, Map):
+                    for m in map:
+                        argtypes.append(m._argtype)
+                        if m.iterset._extruded and not m.iterset.constant_layers:
+                            method = None
+                            for location, method_ in m.implicit_bcs:
+                                if method is None:
+                                    method = method_
+                                else:
+                                    assert method == method_, "Mixed implicit bc methods not supported"
+                            if method is not None:
+                                argtypes.append(m.boundary_masks[method]._argtype)
         if iterset._extruded:
             argtypes.append(ctypes.c_voidp)
 
@@ -956,19 +948,15 @@ def wrapper_snippets(iterset, args,
     """
 
     assert kernel_name is not None
-    if wrapper_name is None:
+    if not wrapper_name:
         wrapper_name = "wrap_" + kernel_name
-    if user_code is None:
+    if not user_code:
         user_code = ""
-
-    direct = all(arg.map is None for arg in args)
 
     def simple_loop(idx, count):
         return "for (int i_%d=0; i_%d<%d; ++i_%d) {" % (idx, idx, count, idx)
 
     def extrusion_loop():
-        if direct:
-            return "{"
         return "for (int j_0 = start_layer; j_0 < end_layer; ++j_0){"
 
     _ssinds_arg = ""
@@ -983,9 +971,9 @@ def wrapper_snippets(iterset, args,
     # wrapper function arguments
     _wrapper_args = ', '.join([arg.c_wrapper_arg() for arg in args])
     # Mat argument declarations
-    _wrapper_decs = ';\n'.join([arg.c_wrapper_dec() for arg in args])
+    _mat_decs = ';\n'.join(filter(None, [arg.c_mat_dec() for arg in args]))
     # Add offset arrays to the wrapper declarations
-    _wrapper_decs += '\n'.join([arg.c_offset_decl() for arg in args])
+    _offset_decs = '\n'.join(filter(None, [arg.c_offset_decl() for arg in args]))
 
     _vec_decs = ';\n'.join([arg.c_vec_dec(is_facet=is_facet) for arg in args if arg._is_vec_map])
 
@@ -1150,7 +1138,8 @@ def wrapper_snippets(iterset, args,
             'index_expr': _index_expr,
             'wrapper_args': _wrapper_args,
             'user_code': user_code,
-            'wrapper_decs': indent(_wrapper_decs, 1),
+            'mat_decs': indent(_mat_decs, 1),
+            'offset_decs': indent(_offset_decs, 1),
             'vec_inits': indent(_vec_inits, 2),
             'entity_offset': indent(_entity_offset, 2),
             'get_mask_indices': indent(_get_mask_indices, 1),
@@ -1212,7 +1201,8 @@ def generate_cell_wrapper(iterset, args, forward_args=(), kernel_name=None, wrap
 static inline void %(wrapper_name)s(%(wrapper_fargs)s%(wrapper_args)s%(nlayers_arg)s, %(IntType)s cell)
 {
     %(user_code)s
-    %(wrapper_decs)s;
+    %(mat_decs)s;
+    %(offset_decs)s;
     %(map_decl)s
     %(vec_decs)s;
     %(index_exprs)s
@@ -1231,4 +1221,3 @@ static inline void %(wrapper_name)s(%(wrapper_fargs)s%(wrapper_args)s%(nlayers_a
 }
 """
     return template % snippets
-    
