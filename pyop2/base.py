@@ -447,10 +447,6 @@ class Arg(object):
         return isinstance(self.data, Dat) and self.map is not None
 
     @cached_property
-    def _is_indirect_and_not_read(self):
-        return self._is_indirect and not self._is_read
-
-    @cached_property
     def _is_read(self):
         return self._access == READ
 
@@ -3421,11 +3417,7 @@ class Mat(DataCarrier):
     ``Mat`` named ``A`` is to be accessed for reading via a row :class:`Map`
     named ``R`` and a column :class:`Map` named ``C``, this is accomplished by::
 
-     A(pyop2.READ, (R[pyop2.i[0]], C[pyop2.i[1]]))
-
-    Notice that it is `always` necessary to index the indirection maps
-    for a ``Mat``. See the :class:`Mat` documentation for more
-    details.
+     A(pyop2.READ, (R, C))
 
     .. note ::
 

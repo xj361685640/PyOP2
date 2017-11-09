@@ -971,6 +971,7 @@ def wrapper_snippets(iterset, args,
     _iterset_masks = ""
     _entity_offset = ""
     _get_mask_indices = ""
+
     if iterset._extruded:
         _layer_arg = ", %s *layers" % as_cstr(IntType)
         if iterset.constant_layers:
@@ -1036,27 +1037,19 @@ def wrapper_snippets(iterset, args,
         _extr_loop = '\n' + extrusion_loop()
         _extr_loop_close = '}\n'
 
-    # Build kernel invocation.
-    # Declare and initialize BUFFER for parameter X of kernel.
-    # if X is written or incremented, then BUFFER is initialized to 0
-    # if X is read, then BUFFER gathers data expected by X
+    # Prepare buffer for args in kernel invocation.
     _buf_name = {}
     _buf_decl, _buf_gather, _buf_scatter, _addto = OrderedDict(), OrderedDict(), OrderedDict(), OrderedDict()
     for count, arg in enumerate(args):
         if not arg.map:
             continue
         _buf_name[arg] = "buffer_%s" % arg.c_arg_name(count)
-        _buf_size = [m.arity for m in arg.map]
-        if not arg._is_mat:
-            # Readjust size to take into account the size of a vector space
-            _dat_size = (arg.data.cdim,)
-            _buf_size = [sum([e*d for e, d in zip(_buf_size, _dat_size)])]
-            _loop_size = [_buf_size[i]//_dat_size[i] for i in range(len(_buf_size))]
+        _loop_size = [m.arity for m in arg.map]
+        if arg._is_mat:
+            _dat_size = arg.data.dims[0][0]
         else:
-            _dat_size = arg.data.dims[0][0]  # TODO: [0][0] ?
-            _buf_size = [e*d for e, d in zip(_buf_size, _dat_size)]
-            _loop_size = [_buf_size[i]//_dat_size[i] for i in range(len(_buf_size))]
-
+            _dat_size = (arg.data.cdim,)
+        _buf_size = [l * d for l, d in zip(_loop_size, _dat_size)]
         _buf_decl[arg] = arg.c_buffer_decl(_buf_size, count, _buf_name[arg], is_facet=is_facet)
         if arg.access in [READ, RW, MIN, MAX]:
             if is_facet:
