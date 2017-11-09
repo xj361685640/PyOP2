@@ -358,35 +358,6 @@ class Arg(base.Arg):
         ret = " "*16 + "{\n" + "\n".join(ret) + "\n" + " "*16 + "}"
         return ret
 
-    def c_add_offset(self, is_facet=False):
-        if not self.map.iterset._extruded:
-            return ""
-        val = []
-        vec_idx = 0
-        for i, (m, d) in enumerate(zip(self.map, self.data)):
-            idx = "i_0"
-            offset_str = "%s[%s]" % (self.c_offset_name(i, 0), idx)
-            val.append("for (int %(idx)s = 0; %(idx)s < %(arity)d; %(idx)s++) {\n"
-                       "  %(name)s[%(vec_idx)d + %(idx)s] += %(offset)s * %(dim)s;\n}" %
-                       {'arity': m.arity,
-                        'name': self.c_vec_name(),
-                        'vec_idx': vec_idx,
-                        'idx': idx,
-                        'offset': offset_str,
-                        'dim': d.cdim})
-            vec_idx += m.arity
-            if is_facet:
-                val.append("for (int %(idx)s = 0; %(idx)s < %(arity)d; %(idx)s++) {\n"
-                           "  %(name)s[%(vec_idx)d + %(idx)s] += %(offset)s * %(dim)s;\n}" %
-                           {'arity': m.arity,
-                            'name': self.c_vec_name(),
-                            'vec_idx': vec_idx,
-                            'idx': idx,
-                            'offset': offset_str,
-                            'dim': d.cdim})
-                vec_idx += m.arity
-        return '\n'.join(val)+'\n'
-
     # New globals generation which avoids false sharing.
     def c_intermediate_globals_decl(self, count):
         return "%(type)s %(name)s_l%(count)s[1][%(dim)s]" % \
@@ -696,13 +667,11 @@ PetscErrorCode %(wrapper_name)s(int start,
   %(mat_decs)s;
   %(offset_decs)s;
   %(map_decl)s
-  %(vec_decs)s;
   %(get_mask_indices)s;
   for ( int n = start; n < end; n++ ) {
     %(IntType)s i = %(index_expr)s;
     %(layer_decls)s;
     %(entity_offset)s;
-    %(vec_inits)s;
     %(map_init)s;
     %(extr_loop)s
     %(buffer_decl)s;
@@ -972,10 +941,8 @@ def wrapper_snippets(iterset, args,
     _wrapper_args = ', '.join([arg.c_wrapper_arg() for arg in args])
     # Mat argument declarations
     _mat_decs = ';\n'.join(filter(None, [arg.c_mat_dec() for arg in args]))
-    # Add offset arrays to the wrapper declarations
+    # Offset array declarations
     _offset_decs = '\n'.join(filter(None, [arg.c_offset_decl() for arg in args]))
-
-    _vec_decs = ';\n'.join([arg.c_vec_dec(is_facet=is_facet) for arg in args if arg._is_vec_map])
 
     _intermediate_globals_decl = ';\n'.join(
         [arg.c_intermediate_globals_decl(count)
@@ -989,9 +956,6 @@ def wrapper_snippets(iterset, args,
         [arg.c_intermediate_globals_writeback(count)
          for count, arg in enumerate(args)
          if arg._is_global_reduction])
-
-    _vec_inits = ';\n'.join([arg.c_vec_init(is_top, is_facet=is_facet) for arg in args
-                             if not arg._is_mat and arg._is_vec_map])
 
     indent = lambda t, i: ('\n' + '  ' * i).join(t.split('\n'))
 
@@ -1069,8 +1033,6 @@ def wrapper_snippets(iterset, args,
             _map_bcs_p += ';\n'.join([arg.c_map_bcs_variable("+", is_facet) for arg in args if arg._is_mat])
         _apply_offset += ';\n'.join([arg.c_add_offset_map(is_facet=is_facet)
                                      for arg in args if arg.map])
-        _apply_offset += ';\n'.join([arg.c_add_offset(is_facet=is_facet)
-                                     for arg in args if arg._is_vec_map])
         _extr_loop = '\n' + extrusion_loop()
         _extr_loop_close = '}\n'
 
@@ -1140,12 +1102,10 @@ def wrapper_snippets(iterset, args,
             'user_code': user_code,
             'mat_decs': indent(_mat_decs, 1),
             'offset_decs': indent(_offset_decs, 1),
-            'vec_inits': indent(_vec_inits, 2),
             'entity_offset': indent(_entity_offset, 2),
             'get_mask_indices': indent(_get_mask_indices, 1),
             'layer_arg': _layer_arg,
             'map_decl': indent(_map_decl, 2),
-            'vec_decs': indent(_vec_decs, 2),
             'map_init': indent(_map_init, 5),
             'apply_offset': indent(_apply_offset, 3),
             'layer_decls': indent(_layer_decls, 5),
@@ -1204,9 +1164,7 @@ static inline void %(wrapper_name)s(%(wrapper_fargs)s%(wrapper_args)s%(nlayers_a
     %(mat_decs)s;
     %(offset_decs)s;
     %(map_decl)s
-    %(vec_decs)s;
     %(index_exprs)s
-    %(vec_inits)s;
     %(map_init)s;
     %(extr_pos_loop)s
         %(apply_offset)s;
