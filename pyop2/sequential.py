@@ -35,7 +35,6 @@
 
 import os
 from textwrap import dedent
-from copy import deepcopy as dcopy
 from collections import OrderedDict
 
 import ctypes
@@ -748,58 +747,60 @@ PetscErrorCode %(wrapper_name)s(int start,
         headers = "\n".join([compiler.get('vect_header', "")])
         if any(arg._is_soa for arg in self._args):
             kernel_code = """
-            #define OP2_STRIDE(a, idx) a[idx]
-            %(header)s
-            %(code)s
-            #undef OP2_STRIDE
-            """ % {'code': self._kernel.code(),
-                   'header': headers}
+#define OP2_STRIDE(a, idx) a[idx]
+%(header)s
+%(code)s
+#undef OP2_STRIDE
+""" % {'code': self._kernel.code(), 'header': headers}
         else:
             kernel_code = """
 %(header)s
 %(code)s
-            """ % {'code': self._kernel.code(),
-                   'header': headers}
-        code_to_compile = strip(dedent(self._wrapper) % self.generate_code())
+""" % {'code': self._kernel.code(), 'header': headers}
 
-        code_to_compile = """
+        if not self._code_dict:
+            self._code_dict = gen_code_dict(self._iterset, self._args,
+                                            kernel_name=self._kernel._name,
+                                            user_code=self._kernel._user_code,
+                                            wrapper_name=self._wrapper_name,
+                                            iteration_region=self._iteration_region,
+                                            pass_layer_arg=self._pass_layer_arg)
+        wrapper = strip(dedent(self._wrapper) % self._code_dict)
+        headers = '\n'.join(filter(None, self._kernel._headers + self._system_headers))
+
+        code = """
 #include <petsc.h>
 #include <stdbool.h>
 #include <math.h>
 #include <inttypes.h>
-%(sys_headers)s
+%(headers)s
 
 %(kernel)s
 
 %(externc_open)s
 %(wrapper)s
 %(externc_close)s
-        """ % {'kernel': kernel_code,
-               'wrapper': code_to_compile,
-               'externc_open': externc_open,
-               'externc_close': externc_close,
-               'sys_headers': '\n'.join(self._kernel._headers + self._system_headers)}
-
-        self._dump_generated_code(code_to_compile)
-        return code_to_compile
+""" % {'kernel': kernel_code, 'wrapper': wrapper, 'externc_open': externc_open, 'externc_close': externc_close, 'headers': headers}
+        self._dump_generated_code(code)
+        return code
 
     @collective
     def compile(self):
         if not hasattr(self, '_args'):
             raise RuntimeError("JITModule has no args associated with it, should never happen")
 
-        # If we weren't in the cache we /must/ have arguments
+        # If we weren't in the cache we MUST have arguments
         compiler = coffee.system.compiler
         cppargs = self._cppargs + \
-                  ["-I%s/include" % d for d in get_petsc_dir()] + \
-                  ["-I%s" % d for d in self._kernel._include_dirs] + \
-                  ["-I%s" % os.path.abspath(os.path.dirname(__file__))]
+            ["-I%s/include" % d for d in get_petsc_dir()] + \
+            ["-I%s" % d for d in self._kernel._include_dirs] + \
+            ["-I%s" % os.path.abspath(os.path.dirname(__file__))]
         if compiler:
             cppargs += [compiler[coffee.system.isa['inst_set']]]
         ldargs = self._libraries + self._kernel._ldargs + \
-                 ["-L%s/lib" % d for d in get_petsc_dir()] + \
-                 ["-Wl,-rpath,%s/lib" % d for d in get_petsc_dir()] + \
-                 ["-lpetsc", "-lm"]
+            ["-L%s/lib" % d for d in get_petsc_dir()] + \
+            ["-Wl,-rpath,%s/lib" % d for d in get_petsc_dir()] + \
+            ["-lpetsc", "-lm"]
 
         self._fun = compilation.load(self.code_to_compile,
                                      self._extension,
@@ -815,16 +816,6 @@ PetscErrorCode %(wrapper_name)s(int start,
         del self._kernel
         del self._direct
         return self._fun
-
-    def generate_code(self):
-        if not self._code_dict:
-            self._code_dict = wrapper_snippets(self._iterset, self._args,
-                                               kernel_name=self._kernel._name,
-                                               user_code=self._kernel._user_code,
-                                               wrapper_name=self._wrapper_name,
-                                               iteration_region=self._iteration_region,
-                                               pass_layer_arg=self._pass_layer_arg)
-        return self._code_dict
 
     def set_argtypes(self, iterset, *args):
         index_type = as_ctypes(IntType)
@@ -875,13 +866,12 @@ class ParLoop(petsc_base.ParLoop):
                     arglist.append(d._data.ctypes.data)
             if arg._is_indirect or arg._is_mat:
                 for map in arg._map:
-                    if map is not None:
-                        for m in map:
-                            arglist.append(m._values.ctypes.data)
-                            if m.iterset._extruded and not m.iterset.constant_layers:
-                                if m.implicit_bcs:
-                                    _, method = m.implicit_bcs[0]
-                                    arglist.append(m.boundary_masks[method].handle)
+                    for m in map:
+                        arglist.append(m._values.ctypes.data)
+                        if m.iterset._extruded and not m.iterset.constant_layers:
+                            if m.implicit_bcs:
+                                _, method = m.implicit_bcs[0]
+                                arglist.append(m.boundary_masks[method].handle)
         if iterset._extruded:
             arglist.append(iterset.layers_array.ctypes.data)
         return arglist
@@ -899,9 +889,8 @@ class ParLoop(petsc_base.ParLoop):
             self.log_flops(self.num_flops * part.size)
 
 
-def wrapper_snippets(iterset, args,
-                     kernel_name=None, wrapper_name=None, user_code=None,
-                     iteration_region=ALL, pass_layer_arg=False):
+def gen_code_dict(iterset, args, kernel_name=None, wrapper_name=None,
+                  user_code=None, iteration_region=ALL, pass_layer_arg=False):
     """Generates code snippets for the wrapper, which can be inserted
     into a code generation template.
 
@@ -913,7 +902,7 @@ def wrapper_snippets(iterset, args,
     :param iteration_region: Iteration region, this is specified when
                              creating a :class:`ParLoop`.
 
-    :return: Dictionary containing the code snippets
+    :return: Dictionary of code snippets
     """
 
     assert kernel_name is not None
@@ -1051,36 +1040,27 @@ def wrapper_snippets(iterset, args,
             _dat_size = (arg.data.cdim,)
         _buf_size = [l * d for l, d in zip(_loop_size, _dat_size)]
         _buf_decl[arg] = arg.c_buffer_decl(_buf_size, count, _buf_name[arg], is_facet=is_facet)
-        if arg.access in [READ, RW, MIN, MAX]:
-            if is_facet:
-                _itspace_loops = '\n'.join(['  ' * n + simple_loop(n, e*2) for n, e in enumerate(_loop_size)])
-            else:
-                _itspace_loops = '\n'.join(['  ' * n + simple_loop(n, e) for n, e in enumerate(_loop_size)])
+        facet_mult = 2 if is_facet else 1
+        if arg.access in [READ, RW, MIN, MAX]:  # Need to gather
+            loop = '\n'.join(['  ' * n + simple_loop(n, e*facet_mult) for n, e in enumerate(_loop_size)])
             _buf_gather[arg] = arg.c_buffer_gather(_buf_size, count, _buf_name[arg])
-            _itspace_loop_close = '\n'.join('  ' * n + '}' for n in range(len(_loop_size) - 1, -1, -1))
-            _buf_gather[arg] = "\n".join([_itspace_loops, _buf_gather[arg], _itspace_loop_close])
-        if arg.access in [WRITE, RW, MIN, MAX, INC]:
+            loop_close = '\n'.join('  ' * n + '}' for n in range(len(_loop_size) - 1, -1, -1))
+            _buf_gather[arg] = "\n".join([loop, _buf_gather[arg], loop_close])
+        if arg.access in [WRITE, RW, MIN, MAX, INC]:  # Need to scatter
             if arg._is_mat:
                 if iterset._extruded:
                     _addto[arg] = arg.c_addto(0, 0, _buf_name[arg], "xtr_", is_facet=is_facet)
                 else:
                     _addto[arg] = arg.c_addto(0, 0, _buf_name[arg], is_facet=is_facet)
             else:
-                # Vector scatter
-                if is_facet:
-                    _itspace_loops = '\n'.join(['  ' * n + simple_loop(n, e*2) for n, e in enumerate(_loop_size)])
-                else:
-                    _itspace_loops = '\n'.join(['  ' * n + simple_loop(n, e) for n, e in enumerate(_loop_size)])
+                loop = '\n'.join(['  ' * n + simple_loop(n, e*facet_mult) for n, e in enumerate(_loop_size)])
                 _buf_scatter[arg] = arg.c_buffer_scatter(_buf_size, count, _buf_name[arg])
-                _itspace_loop_close = '\n'.join('  ' * n + '}' for n in range(len(_loop_size) - 1, -1, -1))
-                _buf_scatter[arg] = "\n".join([_itspace_loops, _buf_scatter[arg], _itspace_loop_close])
+                loop_close = '\n'.join('  ' * n + '}' for n in range(len(_loop_size) - 1, -1, -1))
+                _buf_scatter[arg] = "\n".join([loop, _buf_scatter[arg], loop_close])
 
-    _kernel_args = ', '.join([arg.c_kernel_arg(count) if not arg.map else _buf_name[arg]
-                              for count, arg in enumerate(args)])
-
+    _kernel_args = ', '.join([_buf_name[arg] if arg.map else arg.c_kernel_arg(count) for count, arg in enumerate(args)])
     if pass_layer_arg:
         _kernel_args += ", j_0"
-
     _buf_decl = ";\n".join(_buf_decl.values())
     _buf_gather = ";\n".join(_buf_gather.values())
     _buf_scatter = ";\n".join(_buf_scatter.values())
@@ -1132,7 +1112,7 @@ def generate_cell_wrapper(iterset, args, forward_args=(), kernel_name=None, wrap
     :return: string containing the C code for the single-cell wrapper
     """
     direct = all(a.map is None for a in args)
-    snippets = wrapper_snippets(iterset, args, kernel_name=kernel_name, wrapper_name=wrapper_name)
+    snippets = gen_wrapper_snippets(iterset, args, kernel_name=kernel_name, wrapper_name=wrapper_name)
 
     if iterset._extruded:
         snippets['index_exprs'] = """{0} i = cell / nlayers;
