@@ -88,9 +88,6 @@ class Arg(base.Arg):
             name += "_%d" % j
         return name
 
-    def c_vec_name(self):
-        return self.c_arg_name() + "_vec"
-
     def c_map_name(self, i, j):
         return self.c_arg_name() + "_map%d_%d" % (i, j)
 
@@ -126,18 +123,6 @@ class Arg(base.Arg):
                         val += ", struct MapMask *%s_mask" % self.c_map_name(i, j)
         return val
 
-    def c_vec_dec(self, is_facet=False):
-        facet_mult = 2 if is_facet else 1
-        if self.map is not None:
-            return "%(type)s *%(vec_name)s[%(arity)s];\n" % \
-                {'type': self.ctype,
-                 'vec_name': self.c_vec_name(),
-                 'arity': self.map.arity * facet_mult}
-        else:
-            return "%(type)s *%(vec_name)s;\n" % \
-                {'type': self.ctype,
-                 'vec_name': self.c_vec_name()}
-
     def c_mat_dec(self):
         val = ""
         if self._is_mixed_mat:
@@ -154,55 +139,32 @@ class Arg(base.Arg):
                                                      'iname': self.c_arg_name(0, 0)}
         return val
 
-    def c_ind_data(self, idx, i, j=0, is_top=False, offset=None, var=None):
-        return "%(name)s + (%(map_name)s[%(var)s * %(arity)s + %(idx)s]%(top)s%(off_mul)s%(off_add)s)* %(dim)s%(off)s" % \
+    def c_ind_data(self, idx, i=0):
+        if self.map.iterset._extruded:
+            return "%(name)s + (xtr_%(map_name)s[%(idx)s])*%(dim)s" % \
             {'name': self.c_arg_name(i),
              'map_name': self.c_map_name(i, 0),
-             'var': var if var else 'i',
+             'idx': idx,
+             'dim': str(self.data[i].cdim)}
+        return "%(name)s + (%(map_name)s[i * %(arity)s + %(idx)s])* %(dim)s" % \
+            {'name': self.c_arg_name(i),
+             'map_name': self.c_map_name(i, 0),
              'arity': self.map.split[i].arity,
              'idx': idx,
-             'top': ' + (start_layer - bottom_layer)' if is_top else '',
-             'dim': self.data[i].cdim,
-             'off': ' + %d' % j if j else '',
-             'off_mul': ' * %s' % offset if is_top and offset is not None else '',
-             'off_add': ' + %s' % offset if not is_top and offset is not None else ''}
-
-    def c_ind_data_xtr(self, idx, i, j=0):
-        return "%(name)s + (xtr_%(map_name)s[%(idx)s])*%(dim)s%(off)s" % \
-            {'name': self.c_arg_name(i),
-             'map_name': self.c_map_name(i, 0),
-             'idx': idx,
-             'dim': str(self.data[i].cdim),
-             'off': ' + %d' % j if j else ''}
-
-    def c_kernel_arg_name(self, i, j):
-        return "p_%s" % self.c_arg_name(i, j)
+             'dim': self.data[i].cdim}
 
     def c_global_reduction_name(self, count=None):
         return self.c_arg_name()
 
-    def c_kernel_arg(self, count, i=0, j=0, shape=(0,)):
+    def c_kernel_arg(self, count, i=0):
         if self._is_dat_view and not self._is_direct:
             raise NotImplementedError("Indirect DatView not implemented")
         if self._is_global_reduction:
             return self.c_global_reduction_name(count)
         if isinstance(self.data, Global):
             return self.c_arg_name(i)
-        if self._is_mat:
-            if self.data[i, j]._is_vector_field:
-                return self.c_kernel_arg_name(i, j)
-            elif self.data[i, j]._is_scalar_field:
-                return "(%(t)s (*)[%(dim)d])&%(name)s" % \
-                    {'t': self.ctype,
-                     'dim': shape[0],
-                     'name': self.c_kernel_arg_name(i, j)}
-            else:
-                raise RuntimeError("Don't know how to pass kernel arg %s" % self)
         if self.map:
-            if self.map.iterset._extruded:
-                return self.c_ind_data_xtr("i_0", i)
-            else:
-                return self.c_ind_data("i_0", i)
+            return self.c_ind_data("i_0", i)
         else:
             if self._is_dat_view:
                 idx = "(%(idx)s + i * %(dim)s)" % {'idx': self.data[i].index,
@@ -213,36 +175,7 @@ class Arg(base.Arg):
                                            'idx': idx}
         raise NotImplementedError("Shouldn't execute this line")
 
-    def c_vec_init(self, is_top, is_facet=False):
-        is_top_init = is_top
-        val = []
-        vec_idx = 0
-        for i, (m, d) in enumerate(zip(self.map, self.data)):
-            is_top = is_top_init and m.iterset._extruded
-            idx = "i_0"
-            offset_str = "%s[%s]" % (self.c_offset_name(i, 0), idx)
-            val.append("for (int %(idx)s = 0; %(idx)s < %(dim)d; %(idx)s++) {\n"
-                       "  %(vec_name)s[%(vec_idx)d + %(idx)s] = %(data)s;\n}" %
-                       {'dim': m.arity,
-                        'vec_name': self.c_vec_name(),
-                        'vec_idx': vec_idx,
-                        'idx': idx,
-                        'data': self.c_ind_data(idx, i, is_top=is_top,
-                                                offset=offset_str if is_top else None)})
-            vec_idx += m.arity
-            if is_facet:
-                val.append("for (int %(idx)s = 0; %(idx)s < %(dim)d; %(idx)s++) {\n"
-                           "  %(vec_name)s[%(vec_idx)d + %(idx)s] = %(data)s;\n}" %
-                           {'dim': m.arity,
-                            'vec_name': self.c_vec_name(),
-                            'vec_idx': vec_idx,
-                            'idx': idx,
-                            'data': self.c_ind_data(idx, i, is_top=is_top,
-                                                    offset=offset_str)})
-                vec_idx += m.arity
-        return "\n".join(val)
-
-    def c_addto(self, i, j, buf_name, extruded=None, is_facet=False):
+    def c_addto(self, buf_name, i=0, j=0, extruded=None, is_facet=False):
         maps = as_tuple(self.map, Map)
         nrows = maps[0].split[i].arity
         ncols = maps[1].split[j].arity
@@ -342,9 +275,9 @@ class Arg(base.Arg):
                 nrows *= rdim
                 ncols *= cdim
         ret.append("""ierr = %(addto)s(%(mat)s, %(nrows)s, %(rows)s,
-                                         %(ncols)s, %(cols)s,
-                                         (const PetscScalar *)%(vals)s,
-                                         %(insert)s); CHKERRQ(ierr);""" %
+                                    %(ncols)s, %(cols)s,
+                                    (const PetscScalar *)%(vals)s,
+                                    %(insert)s); CHKERRQ(ierr);""" %
                    {'mat': self.c_arg_name(i, j),
                     'vals': addto_name,
                     'addto': addto,
@@ -354,7 +287,7 @@ class Arg(base.Arg):
                     'cols': cols_str,
                     'IntType': as_cstr(IntType),
                     'insert': "INSERT_VALUES" if self.access == WRITE else "ADD_VALUES"})
-        ret = " "*16 + "{\n" + "\n".join(ret) + "\n" + " "*16 + "}"
+        ret = "{\n" + "\n".join(ret) + "\n" + "}"
         return ret
 
     # New globals generation which avoids false sharing.
@@ -586,33 +519,22 @@ for ( int i = 0; i < %(dim)s; i++ ) %(combine)s;
              "align": " " + align,
              "init": init_expr}
 
-    def c_buffer_gather(self, size, idx, buf_name):
+    def c_buffer_gather(self, size, buf_name):
         dim = self.data.cdim
         return ";\n".join(["%(name)s[i_0*%(dim)d%(ofs)s] = *(%(ind)s%(ofs)s);\n" %
                            {"name": buf_name,
                             "dim": dim,
-                            "ind": self.c_kernel_arg(idx),
+                            "ind": self.c_ind_data("i_0"),
                             "ofs": " + %s" % j if j else ""} for j in range(dim)])
 
-    def c_buffer_scatter(self, size, idx, buf_name):
+    def c_buffer_scatter(self, size, buf_name):
         dim = self.data.cdim
         return ";\n".join(["*(%(ind)s%(ofs)s) %(op)s %(name)s[i_0*%(dim)d%(ofs)s];\n" %
                            {"name": buf_name,
                             "dim": dim,
                             "op": "+=" if self.access == INC else "=",
-                            "ind": self.c_kernel_arg(idx),
+                            "ind": self.c_ind_data("i_0"),
                             "ofs": " + %s" % j if j else ""} for j in range(dim)])
-
-    def c_buffer_scatter_vec(self, count, i, j, mxofs, buf_name):
-        dim = self.data.split[i].cdim
-        return ";\n".join(["*(%(ind)s%(nfofs)s) %(op)s %(name)s[i_0*%(dim)d%(nfofs)s%(mxofs)s]" %
-                           {"ind": self.c_kernel_arg(count, i, j),
-                            "op": "+=" if self.access == INC else "=",
-                            "name": buf_name,
-                            "dim": dim,
-                            "nfofs": " + %d" % o if o else "",
-                            "mxofs": " + %d" % (mxofs[0] * dim) if mxofs else ""}
-                           for o in range(dim)])
 
 
 class JITModule(base.JITModule):
@@ -1043,18 +965,18 @@ def gen_code_dict(iterset, args, kernel_name=None, wrapper_name=None,
         facet_mult = 2 if is_facet else 1
         if arg.access in [READ, RW, MIN, MAX]:  # Need to gather
             loop = '\n'.join(['  ' * n + simple_loop(n, e*facet_mult) for n, e in enumerate(_loop_size)])
-            _buf_gather[arg] = arg.c_buffer_gather(_buf_size, count, _buf_name[arg])
+            _buf_gather[arg] = arg.c_buffer_gather(_buf_size, _buf_name[arg])
             loop_close = '\n'.join('  ' * n + '}' for n in range(len(_loop_size) - 1, -1, -1))
             _buf_gather[arg] = "\n".join([loop, _buf_gather[arg], loop_close])
         if arg.access in [WRITE, RW, MIN, MAX, INC]:  # Need to scatter
             if arg._is_mat:
                 if iterset._extruded:
-                    _addto[arg] = arg.c_addto(0, 0, _buf_name[arg], "xtr_", is_facet=is_facet)
+                    _addto[arg] = arg.c_addto(_buf_name[arg], extruded="xtr_", is_facet=is_facet)
                 else:
-                    _addto[arg] = arg.c_addto(0, 0, _buf_name[arg], is_facet=is_facet)
+                    _addto[arg] = arg.c_addto(_buf_name[arg], is_facet=is_facet)
             else:
                 loop = '\n'.join(['  ' * n + simple_loop(n, e*facet_mult) for n, e in enumerate(_loop_size)])
-                _buf_scatter[arg] = arg.c_buffer_scatter(_buf_size, count, _buf_name[arg])
+                _buf_scatter[arg] = arg.c_buffer_scatter(_buf_size, _buf_name[arg])
                 loop_close = '\n'.join('  ' * n + '}' for n in range(len(_loop_size) - 1, -1, -1))
                 _buf_scatter[arg] = "\n".join([loop, _buf_scatter[arg], loop_close])
 
