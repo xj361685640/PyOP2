@@ -74,22 +74,12 @@ class Kernel(base.Kernel):
 
 class Arg(base.Arg):
 
-    def c_arg_name(self, i=0, j=None):
+    def c_arg_name(self):
         name = self.name
-        if self._is_indirect and self.idx and not self._is_vec_map:
-            name = "%s_%d" % (name, self.idx)
-        if i is not None:
-            # For a mixed ParLoop we can't necessarily assume all arguments are
-            # also mixed. If that's not the case we want index 0.
-            if not self._is_mat and len(self.data) == 1:
-                i = 0
-            name += "_%d" % i
-        if j is not None:
-            name += "_%d" % j
         return name
 
-    def c_map_name(self, i, j):
-        return self.c_arg_name() + "_map%d_%d" % (i, j)
+    def c_map_name(self, i):
+        return self.c_arg_name() + "_map%d" % i
 
     def c_offset_name(self, i, j):
         return self.c_arg_name() + "_off%d_%d" % (i, j)
@@ -109,96 +99,79 @@ class Arg(base.Arg):
         return "\n".join(val)
 
     def c_wrapper_arg(self):
+        val = []
         if self._is_mat:
-            val = "Mat %s_" % self.c_arg_name()
+            val.append("Mat %s" % self.c_arg_name())
         else:
-            val = ', '.join(["%s *%s" % (self.ctype, self.c_arg_name(i))
-                             for i in range(len(self.data))])
-        if self._is_indirect or self._is_mat:
-            for i, map in enumerate(as_tuple(self.map, Map)):
-                for j, m in enumerate(map):
-                    val += ", %s *%s" % (as_cstr(IntType), self.c_map_name(i, j))
-                    # boundary masks for variable layer extrusion
-                    if m.iterset._extruded and not m.iterset.constant_layers and m.implicit_bcs:
-                        val += ", struct MapMask *%s_mask" % self.c_map_name(i, j)
-        return val
+            val.append("%s *%s" % (self.ctype, self.c_arg_name()))
+        if self.map:
+            for i, m in enumerate(as_tuple(self.map, Map)):
+                val.append("%s *%s" % (as_cstr(IntType), self.c_map_name(i)))
+                # boundary masks for variable layer extrusion
+                if m.iterset._extruded and not m.iterset.constant_layers and m.implicit_bcs:
+                    val.append("struct MapMask *%s_mask" % self.c_map_name(i))
+        return ', '.join(val)
 
-    def c_mat_dec(self):
-        val = ""
-        if self._is_mixed_mat:
-            rows, cols = self.data.sparsity.shape
-            for i in range(rows):
-                for j in range(cols):
-                    val += "Mat %(iname)s; MatNestGetSubMat(%(name)s_, %(i)d, %(j)d, &%(iname)s);\n" \
-                        % {'name': self.c_arg_name(),
-                           'iname': self.c_arg_name(i, j),
-                           'i': i,
-                           'j': j}
-        elif self._is_mat:
-            val += "Mat %(iname)s = %(name)s_;\n" % {'name': self.c_arg_name(),
-                                                     'iname': self.c_arg_name(0, 0)}
-        return val
-
-    def c_ind_data(self, idx, i=0):
+    def c_ind_data(self, idx):
         if self.map.iterset._extruded:
             return "%(name)s + (xtr_%(map_name)s[%(idx)s])*%(dim)s" % \
-            {'name': self.c_arg_name(i),
-             'map_name': self.c_map_name(i, 0),
-             'idx': idx,
-             'dim': str(self.data[i].cdim)}
+                   {'name': self.c_arg_name(),
+                    'map_name': self.c_map_name(0),
+                    'idx': idx,
+                    'dim': str(self.data[i].cdim)}
         return "%(name)s + (%(map_name)s[i * %(arity)s + %(idx)s])* %(dim)s" % \
-            {'name': self.c_arg_name(i),
-             'map_name': self.c_map_name(i, 0),
-             'arity': self.map.split[i].arity,
+            {'name': self.c_arg_name(),
+             'map_name': self.c_map_name(0),
+             'arity': self.map.arity,
              'idx': idx,
-             'dim': self.data[i].cdim}
+             'dim': self.data.cdim}
 
     def c_global_reduction_name(self, count=None):
         return self.c_arg_name()
 
-    def c_kernel_arg(self, count, i=0):
+    def c_kernel_arg(self, count):
         if self._is_dat_view and not self._is_direct:
             raise NotImplementedError("Indirect DatView not implemented")
         if self._is_global_reduction:
             return self.c_global_reduction_name(count)
         if isinstance(self.data, Global):
-            return self.c_arg_name(i)
+            return self.c_arg_name()
         if self.map:
-            return self.c_ind_data("i_0", i)
+            return self.c_ind_data("i_0")
         else:
             if self._is_dat_view:
-                idx = "(%(idx)s + i * %(dim)s)" % {'idx': self.data[i].index,
+                idx = "(%(idx)s + i * %(dim)s)" % {'idx': self.data.index,
                                                    'dim': super(DatView, self.data[i]).cdim}
             else:
-                idx = "(i * %(dim)s)" % {'dim': self.data[i].cdim}
-            return "%(name)s + %(idx)s" % {'name': self.c_arg_name(i),
+                idx = "(i * %(dim)s)" % {'dim': self.data.cdim}
+            return "%(name)s + %(idx)s" % {'name': self.c_arg_name(),
                                            'idx': idx}
         raise NotImplementedError("Shouldn't execute this line")
 
-    def c_addto(self, buf_name, i=0, j=0, extruded=None, is_facet=False):
+    def c_addto(self, buf_name, extruded=None, is_facet=False):
         maps = as_tuple(self.map, Map)
-        nrows = maps[0].split[i].arity
-        ncols = maps[1].split[j].arity
-        rows_str = "%s + i * %s" % (self.c_map_name(0, i), nrows)
-        cols_str = "%s + i * %s" % (self.c_map_name(1, j), ncols)
+        nrows = maps[0].arity
+        ncols = maps[1].arity
+        rows_str = "%s + i * %s" % (self.c_map_name(0), nrows)
+        cols_str = "%s + i * %s" % (self.c_map_name(1), ncols)
 
         if extruded is not None:
-            rows_str = extruded + self.c_map_name(0, i)
-            cols_str = extruded + self.c_map_name(1, j)
+            rows_str = extruded + self.c_map_name(0)
+            cols_str = extruded + self.c_map_name(1)
 
         if is_facet:
             nrows *= 2
             ncols *= 2
 
         ret = []
-        rbs, cbs = self.data.sparsity[i, j].dims[0][0]
+        rbs, cbs = self.data.sparsity[0, 0].dims[0][0]
         rdim = rbs * nrows
         addto_name = buf_name
         addto = 'MatSetValuesLocal'
         if self.data._is_vector_field:
             addto = 'MatSetValuesBlockedLocal'
             rmap, cmap = maps
-            rdim, cdim = self.data.dims[i][j]
+            rdim, cdim = self.data.dims[0][0]
             if rmap.vector_index is not None or cmap.vector_index is not None:
                 rows_str = "rowmap"
                 cols_str = "colmap"
@@ -208,8 +181,8 @@ class Arg(base.Arg):
                          'ncols': ncols,
                          'rdim': rdim,
                          'cdim': cdim,
-                         'rowmap': self.c_map_name(0, i),
-                         'colmap': self.c_map_name(1, j),
+                         'rowmap': self.c_map_name(0),
+                         'colmap': self.c_map_name(1),
                          'drop_full_row': 0 if rmap.vector_index is not None else 1,
                          'drop_full_col': 0 if cmap.vector_index is not None else 1,
                          'IntType': as_cstr(IntType),
@@ -278,7 +251,7 @@ class Arg(base.Arg):
                                     %(ncols)s, %(cols)s,
                                     (const PetscScalar *)%(vals)s,
                                     %(insert)s); CHKERRQ(ierr);""" %
-                   {'mat': self.c_arg_name(i, j),
+                   {'mat': self.c_arg_name(),
                     'vals': addto_name,
                     'addto': addto,
                     'nrows': nrows,
@@ -330,15 +303,14 @@ for ( int i = 0; i < %(dim)s; i++ ) %(combine)s;
         else:
             dsets = (self.data.dataset,)
         val = []
-        for i, (map, dset) in enumerate(zip(as_tuple(self.map, Map), dsets)):
-            for j, (m, d) in enumerate(zip(map, dset)):
-                dim = m.arity
-                if is_facet:
-                    dim *= 2
-                val.append("%(IntType)s xtr_%(name)s[%(dim)s];" %
-                           {'name': self.c_map_name(i, j),
-                            'dim': dim,
-                            'IntType': as_cstr(IntType)})
+        for i, (m, d) in enumerate(zip(as_tuple((self.map, Map)), dsets)):
+            dim = m.arity
+            if is_facet:
+                dim *= 2
+            val.append("%(IntType)s xtr_%(name)s[%(dim)s];" %
+                       {'name': self.c_map_name(i),
+                        'dim': dim,
+                        'IntType': as_cstr(IntType)})
         return '\n'.join(val)+'\n'
 
     def c_map_init(self, is_top=False, is_facet=False):
@@ -347,24 +319,23 @@ for ( int i = 0; i < %(dim)s; i++ ) %(combine)s;
         else:
             dsets = (self.data.dataset,)
         val = []
-        for i, (map, dset) in enumerate(zip(as_tuple(self.map, Map), dsets)):
-            for j, (m, d) in enumerate(zip(map, dset)):
-                idx = "i_0"
-                offset_str = "%s[%s]" % (self.c_offset_name(i, j), idx)
+        for i, (m, d) in enumerate(zip(as_tuple(self.map, Map), dsets)):
+            idx = "i_0"
+            offset_str = "%s[%s]" % (self.c_offset_name(i, j), idx)
+            val.append("for (int %(idx)s = 0; %(idx)s < %(dim)d; %(idx)s++) {\n"
+                       "  xtr_%(name)s[%(idx)s] = *(%(name)s + i * %(dim)d + %(idx)s)%(off_top)s;\n}" %
+                       {'name': self.c_map_name(i),
+                        'dim': m.arity,
+                        'idx': idx,
+                        'off_top': ' + (start_layer - bottom_layer) * '+offset_str if is_top else ''})
+            if is_facet:
                 val.append("for (int %(idx)s = 0; %(idx)s < %(dim)d; %(idx)s++) {\n"
-                           "  xtr_%(name)s[%(idx)s] = *(%(name)s + i * %(dim)d + %(idx)s)%(off_top)s;\n}" %
-                           {'name': self.c_map_name(i, j),
+                           "  xtr_%(name)s[%(dim)d + %(idx)s] = *(%(name)s + i * %(dim)d + %(idx)s)%(off_top)s%(off)s;\n}" %
+                           {'name': self.c_map_name(i),
                             'dim': m.arity,
                             'idx': idx,
-                            'off_top': ' + (start_layer - bottom_layer) * '+offset_str if is_top else ''})
-                if is_facet:
-                    val.append("for (int %(idx)s = 0; %(idx)s < %(dim)d; %(idx)s++) {\n"
-                               "  xtr_%(name)s[%(dim)d + %(idx)s] = *(%(name)s + i * %(dim)d + %(idx)s)%(off_top)s%(off)s;\n}" %
-                               {'name': self.c_map_name(i, j),
-                                'dim': m.arity,
-                                'idx': idx,
-                                'off_top': ' + (start_layer - bottom_layer)' if is_top else '',
-                                'off': ' + ' + offset_str})
+                            'off_top': ' + (start_layer - bottom_layer)' if is_top else '',
+                            'off': ' + ' + offset_str})
         return '\n'.join(val)+'\n'
 
     def c_map_bcs_variable(self, sign, is_facet):
@@ -374,32 +345,29 @@ for ( int i = 0; i < %(dim)s; i++ ) %(combine)s;
         bottom_masking = []
         top_masking = []
         chart = None
-        for i, map in enumerate(maps):
-            if not map.iterset._extruded:
-                continue
-            for j, m in enumerate(map):
-                map_name = self.c_map_name(i, j)
-                for location, method in m.implicit_bcs:
-                    if chart is None:
-                        chart = m.boundary_masks[method].section.getChart()
-                    else:
-                        assert chart == m.boundary_masks[method].section.getChart()
-                    tmp = """apply_extruded_mask(%(map_name)s_mask->section,
-                                                 %(map_name)s_mask_indices,
-                                                 %(mask_name)s,
-                                                 facet*%(facet_offset)s,
-                                                 %(nbits)s,
-                                                 %(sign)s10000000,
-                                                 xtr_%(map_name)s);""" % \
-                          {"map_name": map_name,
-                           "mask_name": "%s_mask" % location,
-                           "facet_offset": m.arity,
-                           "nbits": chart[1],
-                           "sign": sign}
-                    if location == "bottom":
-                        bottom_masking.append(tmp)
-                    else:
-                        top_masking.append(tmp)
+        for i, m in enumerate(maps):
+            map_name = self.c_map_name(i)
+            for location, method in m.implicit_bcs:
+                if chart is None:
+                    chart = m.boundary_masks[method].section.getChart()
+                else:
+                    assert chart == m.boundary_masks[method].section.getChart()
+                tmp = """apply_extruded_mask(%(map_name)s_mask->section,
+                                             %(map_name)s_mask_indices,
+                                             %(mask_name)s,
+                                             facet*%(facet_offset)s,
+                                             %(nbits)s,
+                                             %(sign)s10000000,
+                                             xtr_%(map_name)s);""" % \
+                      {"map_name": map_name,
+                       "mask_name": "%s_mask" % location,
+                       "facet_offset": m.arity,
+                       "nbits": chart[1],
+                       "sign": sign}
+                if location == "bottom":
+                    bottom_masking.append(tmp)
+                else:
+                    top_masking.append(tmp)
         if chart is None:
             # No implicit bcs found
             return ""
@@ -413,7 +381,6 @@ for ( int i = 0; i < %(dim)s; i++ ) %(combine)s;
         return "\n".join(val)
 
     def c_map_bcs(self, sign, is_facet):
-        maps = as_tuple(self.map, Map)
         val = []
         # To throw away boundary condition values, we subtract a large
         # value from the map to make it negative then add it on later to
@@ -422,26 +389,23 @@ for ( int i = 0; i < %(dim)s; i++ ) %(combine)s;
 
         need_bottom = False
         # Apply any bcs on the first (bottom) layer
-        for i, map in enumerate(maps):
-            if not map.iterset._extruded:
-                continue
-            for j, m in enumerate(map):
-                bottom_masks = None
-                for location, name in m.implicit_bcs:
-                    if location == "bottom":
-                        if bottom_masks is None:
-                            bottom_masks = m.bottom_mask[name].copy()
-                        else:
-                            bottom_masks += m.bottom_mask[name]
-                        need_bottom = True
-                if bottom_masks is not None:
-                    for idx in range(m.arity):
-                        if bottom_masks[idx] < 0:
-                            val.append("xtr_%(name)s[%(ind)s] %(sign)s= %(val)s;" %
-                                       {'name': self.c_map_name(i, j),
-                                        'val': max_int,
-                                        'ind': idx,
-                                        'sign': sign})
+        for i, m in enumerate(as_tuple(self.map, Map)):
+            bottom_masks = None
+            for location, name in m.implicit_bcs:
+                if location == "bottom":
+                    if bottom_masks is None:
+                        bottom_masks = m.bottom_mask[name].copy()
+                    else:
+                        bottom_masks += m.bottom_mask[name]
+                    need_bottom = True
+            if bottom_masks is not None:
+                for idx in range(m.arity):
+                    if bottom_masks[idx] < 0:
+                        val.append("xtr_%(name)s[%(ind)s] %(sign)s= %(val)s;" %
+                                   {'name': self.c_map_name(i),
+                                    'val': max_int,
+                                    'ind': idx,
+                                    'sign': sign})
         if need_bottom:
             val.insert(0, "if (j_0 == bottom_layer) {")
             val.append("}")
@@ -466,7 +430,7 @@ for ( int i = 0; i < %(dim)s; i++ ) %(combine)s;
                     for idx in range(m.arity):
                         if top_masks[idx] < 0:
                             val.append("xtr_%(name)s[%(ind)s] %(sign)s= %(val)s;" %
-                                       {'name': self.c_map_name(i, j),
+                                       {'name': self.c_map_name(i),
                                         'val': max_int,
                                         'ind': idx + facet_offset,
                                         'sign': sign})
@@ -491,18 +455,18 @@ for ( int i = 0; i < %(dim)s; i++ ) %(combine)s;
                            "  xtr_%(name)s[%(idx)s] += %(off)s;\n}" %
                            {'arity': m.arity,
                             'idx': idx,
-                            'name': self.c_map_name(i, j),
+                            'name': self.c_map_name(i),
                             'off': offset_str})
                 if is_facet:
                     val.append("for (int %(idx)s = 0; %(idx)s < %(arity)d; %(idx)s++) {\n"
                                "  xtr_%(name)s[%(arity)d + %(idx)s] += %(off)s;\n}" %
                                {'arity': m.arity,
                                 'idx': idx,
-                                'name': self.c_map_name(i, j),
+                                'name': self.c_map_name(i),
                                 'off': offset_str})
         return '\n'.join(val)+'\n'
 
-    def c_buffer_decl(self, size, idx, buf_name, is_facet=False, init=True):
+    def c_buffer_decl(self, size, buf_name, is_facet=False, init=True):
         buf_type = self.data.ctype
         dim = len(size)
         compiler = coffee.system.compiler
@@ -585,7 +549,6 @@ PetscErrorCode %(wrapper_name)s(int start,
                       %(layer_arg)s) {
   PetscErrorCode ierr;
   %(user_code)s
-  %(mat_decs)s;
   %(offset_decs)s;
   %(map_decl)s
   %(get_mask_indices)s;
@@ -850,8 +813,6 @@ def gen_code_dict(iterset, args, kernel_name=None, wrapper_name=None,
 
     # wrapper function arguments
     _wrapper_args = ', '.join([arg.c_wrapper_arg() for arg in args])
-    # Mat argument declarations
-    _mat_decs = ';\n'.join(filter(None, [arg.c_mat_dec() for arg in args]))
     # Offset array declarations
     _offset_decs = '\n'.join(filter(None, [arg.c_offset_decl() for arg in args]))
 
@@ -906,11 +867,10 @@ def gen_code_dict(iterset, args, kernel_name=None, wrapper_name=None,
                     _entity_offset += "ierr = PetscSectionGetOffset(iterset_masks->section, n, &entity_offset);CHKERRQ(ierr);\n"
                     get_tmp = ["const int64_t *bottom_masks = iterset_masks->bottom;",
                                "const int64_t *top_masks = iterset_masks->top;"]
-                    for i, map in enumerate(as_tuple(arg.map)):
-                        for j, m in enumerate(map):
-                            if m.implicit_bcs:
-                                name = "%s_mask_indices" % arg.c_map_name(i, j)
-                                get_tmp.append("const PetscInt *%s = %s_mask->indices;" % (name, arg.c_map_name(i, j)))
+                    for i, m in enumerate(as_tuple(arg.map)):
+                        if m.implicit_bcs:
+                            name = "%s_mask_indices" % arg.c_map_name(i)
+                            get_tmp.append("const PetscInt *%s = %s_mask->indices;" % (name, arg.c_map_name(i)))
                     _get_mask_indices = "\n".join(get_tmp)
                     break
         _layer_decls = "%(IntType)s bottom_layer = layers[%(idx0)s];\n"
@@ -954,14 +914,14 @@ def gen_code_dict(iterset, args, kernel_name=None, wrapper_name=None,
     for count, arg in enumerate(args):
         if not arg.map:
             continue
-        _buf_name[arg] = "buffer_%s" % arg.c_arg_name(count)
+        _buf_name[arg] = "buffer_%s" % arg.c_arg_name()
         _loop_size = [m.arity for m in arg.map]
         if arg._is_mat:
             _dat_size = arg.data.dims[0][0]
         else:
             _dat_size = (arg.data.cdim,)
         _buf_size = [l * d for l, d in zip(_loop_size, _dat_size)]
-        _buf_decl[arg] = arg.c_buffer_decl(_buf_size, count, _buf_name[arg], is_facet=is_facet)
+        _buf_decl[arg] = arg.c_buffer_decl(_buf_size, _buf_name[arg], is_facet=is_facet)
         facet_mult = 2 if is_facet else 1
         if arg.access in [READ, RW, MIN, MAX]:  # Need to gather
             loop = '\n'.join(['  ' * n + simple_loop(n, e*facet_mult) for n, e in enumerate(_loop_size)])
@@ -995,7 +955,6 @@ def gen_code_dict(iterset, args, kernel_name=None, wrapper_name=None,
             'index_expr': _index_expr,
             'wrapper_args': _wrapper_args,
             'user_code': user_code,
-            'mat_decs': indent(_mat_decs, 1),
             'offset_decs': indent(_offset_decs, 1),
             'entity_offset': indent(_entity_offset, 2),
             'get_mask_indices': indent(_get_mask_indices, 1),
@@ -1034,7 +993,7 @@ def generate_cell_wrapper(iterset, args, forward_args=(), kernel_name=None, wrap
     :return: string containing the C code for the single-cell wrapper
     """
     direct = all(a.map is None for a in args)
-    snippets = gen_wrapper_snippets(iterset, args, kernel_name=kernel_name, wrapper_name=wrapper_name)
+    snippets = gen_code_dict(iterset, args, kernel_name=kernel_name, wrapper_name=wrapper_name)
 
     if iterset._extruded:
         snippets['index_exprs'] = """{0} i = cell / nlayers;
@@ -1056,7 +1015,6 @@ def generate_cell_wrapper(iterset, args, forward_args=(), kernel_name=None, wrap
 static inline void %(wrapper_name)s(%(wrapper_fargs)s%(wrapper_args)s%(nlayers_arg)s, %(IntType)s cell)
 {
     %(user_code)s
-    %(mat_decs)s;
     %(offset_decs)s;
     %(map_decl)s
     %(index_exprs)s
