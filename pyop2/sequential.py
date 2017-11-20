@@ -59,18 +59,15 @@ from pyop2.profiling import timed_region
 from pyop2.utils import as_tuple, cached_property, strip, get_petsc_dir
 
 
+import loopy as lp
+
 import coffee.system
-from coffee.plan import ASTKernel
 
 
 class Kernel(base.Kernel):
 
     def _ast_to_c(self, ast, opts={}):
-        """Transform an Abstract Syntax Tree representing the kernel into a
-        string of code (C syntax) suitable to CPU execution."""
-        ast_handler = ASTKernel(ast, self._include_dirs)
-        ast_handler.plan_cpu(self._opts)
-        return ast_handler.gencode()
+        return lp.generate_code_v2(ast).device_code()
 
 
 class Arg(base.Arg):
