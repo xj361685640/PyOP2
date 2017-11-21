@@ -3676,15 +3676,23 @@ class Kernel(Cached):
         else:
             self._ast = code
             self._code = self._ast_to_c(self._ast, opts)
-            # search = Find((ast.FunDecl, ast.FlatBlock)).visit(self._ast)
-            # fundecls, flatblocks = search[ast.FunDecl], search[ast.FlatBlock]
-            # assert len(fundecls) >= 1, "Illegal Kernel"
-            # fundecl, = [fd for fd in fundecls if fd.name == self._name]
-            self._attached_info = {
-                'fundecl': None,
-                'attached': False,
-                'flatblocks': False
-            }
+            search = Find((ast.FunDecl, ast.FlatBlock)).visit(self._ast)
+            if search:
+                fundecls, flatblocks = search[ast.FunDecl], search[ast.FlatBlock]
+                assert len(fundecls) >= 1, "Illegal Kernel"
+                fundecl, = [fd for fd in fundecls if fd.name == self._name]
+                self._attached_info = {
+                    'fundecl': fundecl,
+                    'attached': False,
+                    'flatblocks': len(flatblocks) > 0
+                }
+            else:
+                self._attached_info = {
+                    'fundecl': None,
+                    'attached': False,
+                    'flatblocks': True
+                }
+
         self._initialized = True
 
     @property
@@ -3890,13 +3898,13 @@ class ParLoop(LazyComputation):
         # Only need to do this once, since the kernel "defines" the
         # access descriptors, if they were to have changed, the kernel
         # would be invalid for this par_loop.
-        # fundecl = kernel._attached_info['fundecl']
-        # attached = kernel._attached_info['attached']
-        # if fundecl and not attached:
-        #     for arg, f_arg in zip(self._actual_args, fundecl.args):
-        #         if arg._uses_itspace and arg._is_INC:
-        #             f_arg.pragma = set([ast.WRITE])
-        #     kernel._attached_info['attached'] = True
+        fundecl = kernel._attached_info['fundecl']
+        attached = kernel._attached_info['attached']
+        if fundecl and not attached:
+            for arg, f_arg in zip(self._actual_args, fundecl.args):
+                if arg._is_INC:
+                    f_arg.pragma = set([ast.WRITE])
+            kernel._attached_info['attached'] = True
         self.arglist = self.prepare_arglist(iterset, *self.args)
 
     def _run(self):
