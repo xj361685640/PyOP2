@@ -85,19 +85,18 @@ class Arg(base.Arg):
     def c_map_name(self, i):
         return self.c_arg_name() + "_map%d" % i
 
-    def c_offset_name(self, i, j):
-        return self.c_arg_name() + "_off%d_%d" % (i, j)
+    def c_offset_name(self, i):
+        return self.c_arg_name() + "_off%d" % (i)
 
     def c_offset_decl(self):
         maps = as_tuple(self.map, Map)
         val = []
-        for i, map in enumerate(maps):
-            if not map.iterset._extruded:
+        for i, m in enumerate(maps):
+            if not m.iterset._extruded:
                 continue
-            for j, m in enumerate(map):
-                offset_data = ', '.join(str(o) for o in m.offset)
-                val.append("static const int %s[%d] = { %s };" %
-                           (self.c_offset_name(i, j), m.arity, offset_data))
+            offset_data = ', '.join(str(o) for o in m.offset)
+            val.append("static const int %s[%d] = { %s };" %
+                       (self.c_offset_name(i), m.arity, offset_data))
         if len(val) == 0:
             return ""
         return "\n".join(val)
@@ -122,7 +121,7 @@ class Arg(base.Arg):
                    {'name': self.c_arg_name(),
                     'map_name': self.c_map_name(0),
                     'idx': idx,
-                    'dim': str(self.data[i].cdim)}
+                    'dim': str(self.data.cdim)}
         return "%(name)s + (%(map_name)s[i * %(arity)s + %(idx)s])* %(dim)s" % \
             {'name': self.c_arg_name(),
              'map_name': self.c_map_name(0),
@@ -307,7 +306,7 @@ for ( int i = 0; i < %(dim)s; i++ ) %(combine)s;
         else:
             dsets = (self.data.dataset,)
         val = []
-        for i, (m, d) in enumerate(zip(as_tuple((self.map, Map)), dsets)):
+        for i, (m, d) in enumerate(zip(as_tuple(self.map, Map), dsets)):
             dim = m.arity
             if is_facet:
                 dim *= 2
@@ -325,7 +324,7 @@ for ( int i = 0; i < %(dim)s; i++ ) %(combine)s;
         val = []
         for i, (m, d) in enumerate(zip(as_tuple(self.map, Map), dsets)):
             idx = "i_0"
-            offset_str = "%s[%s]" % (self.c_offset_name(i, j), idx)
+            offset_str = "%s[%s]" % (self.c_offset_name(i), idx)
             val.append("for (int %(idx)s = 0; %(idx)s < %(dim)d; %(idx)s++) {\n"
                        "  xtr_%(name)s[%(idx)s] = *(%(name)s + i * %(dim)d + %(idx)s)%(off_top)s;\n}" %
                        {'name': self.c_map_name(i),
@@ -385,6 +384,7 @@ for ( int i = 0; i < %(dim)s; i++ ) %(combine)s;
         return "\n".join(val)
 
     def c_map_bcs(self, sign, is_facet):
+        maps = as_tuple(self.map, Map)
         val = []
         # To throw away boundary condition values, we subtract a large
         # value from the map to make it negative then add it on later to
@@ -393,7 +393,7 @@ for ( int i = 0; i < %(dim)s; i++ ) %(combine)s;
 
         need_bottom = False
         # Apply any bcs on the first (bottom) layer
-        for i, m in enumerate(as_tuple(self.map, Map)):
+        for i, m in enumerate(maps):
             bottom_masks = None
             for location, name in m.implicit_bcs:
                 if location == "bottom":
@@ -454,7 +454,7 @@ for ( int i = 0; i < %(dim)s; i++ ) %(combine)s;
                 continue
             for j, (m, d) in enumerate(zip(map, dset)):
                 idx = "i_0"
-                offset_str = "%s[%s]" % (self.c_offset_name(i, 0), idx)
+                offset_str = "%s[%s]" % (self.c_offset_name(i), idx)
                 val.append("for (int %(idx)s = 0; %(idx)s < %(arity)d; %(idx)s++) {\n"
                            "  xtr_%(name)s[%(idx)s] += %(off)s;\n}" %
                            {'arity': m.arity,
