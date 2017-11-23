@@ -62,6 +62,7 @@ from coffee.visitors import Find, EstimateFlops
 from coffee import base as ast
 from functools import reduce
 
+import loopy as lp
 
 def _make_object(name, *args, **kwargs):
     from pyop2 import sequential
@@ -3644,6 +3645,8 @@ class Kernel(Cached):
         # HACK: Temporary fix!
         if isinstance(code, Node):
             code = code.gencode()
+        if isinstance(code, lp.kernel.LoopKernel):
+            code = lp.generate_code_v2(code).device_code()
         hashee = (str(code) + name + str(sorted(opts.items())) + str(include_dirs) +
                   str(headers) + version + str(configuration['loop_fusion']) +
                   str(ldargs) + str(cpp))
