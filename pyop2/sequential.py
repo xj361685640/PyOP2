@@ -144,7 +144,7 @@ class Arg(base.Arg):
         else:
             if self._is_dat_view:
                 idx = "(%(idx)s + i * %(dim)s)" % {'idx': self.data.index,
-                                                   'dim': super(DatView, self.data[i]).cdim}
+                                                   'dim': super(DatView, self.data).cdim}
             else:
                 idx = "(i * %(dim)s)" % {'dim': self.data.cdim}
             return "%(name)s + %(idx)s" % {'name': self.c_arg_name(),
