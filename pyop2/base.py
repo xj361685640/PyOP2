@@ -396,10 +396,6 @@ class Arg(object):
         return self._is_dat and self.data.soa
 
     @cached_property
-    def _is_vec_map(self):
-        return self._is_indirect and self._idx is None
-
-    @cached_property
     def _is_mat(self):
         return isinstance(self.data, Mat)
 
