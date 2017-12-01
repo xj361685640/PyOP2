@@ -179,7 +179,7 @@ class HardFusionSchedule(FusionSchedule, Schedule):
         fargs = info.get('fargs', {})
         args = tuple(FusionArg(arg, *fargs[j]) if j in fargs else arg
                      for j, arg in enumerate(args))
-        return FusionParLoop(kernel, iterset, *args,  iterate=iterregion, insp_name=self._insp_name)
+        return FusionParLoop(kernel, iterset, *args, iterate=iterregion, insp_name=self._insp_name)
 
     def _filter(self, loops):
         return list(WeakFilter().loop_args(loops).values())
@@ -209,7 +209,6 @@ class TilingSchedule(Schedule):
                              for arg in loop.args])
         all_args = tuple(all_args)
         # Data for the actual ParLoop
-        it_space = TilingIterationSpace(all_itspaces)
         args = self._filter(loop_chain)
         reduced_globals = [loop._reduced_globals for loop in loop_chain]
         read_args = set(flatten([loop.reads for loop in loop_chain]))
@@ -229,4 +228,4 @@ class TilingSchedule(Schedule):
             'inspection': self._inspection,
             'executor': self._executor
         }
-        return [TilingParLoop(self._kernel, it_space, *args, **kwargs)]
+        return [TilingParLoop(self._kernel, *args, **kwargs)]

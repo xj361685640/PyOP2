@@ -803,9 +803,6 @@ def gen_code_dict(iterset, args, kernel_name=None, wrapper_name=None,
     def simple_loop(idx, count):
         return "for (int i_%d=0; i_%d<%d; ++i_%d) {" % (idx, idx, count, idx)
 
-    def extrusion_loop():
-        return "for (int j_0 = start_layer; j_0 < end_layer; ++j_0){"
-
     _ssinds_arg = ""
     _index_expr = "(%s)n" % as_cstr(IntType)
     is_top = (iteration_region == ON_TOP)
@@ -909,7 +906,10 @@ def gen_code_dict(iterset, args, kernel_name=None, wrapper_name=None,
             _map_bcs_p += ';\n'.join([arg.c_map_bcs_variable("+", is_facet) for arg in args if arg._is_mat])
         _apply_offset += ';\n'.join([arg.c_add_offset_map(is_facet=is_facet)
                                      for arg in args if arg.map])
-        _extr_loop = '\n' + extrusion_loop()
+        if all(a.map is None for a in args):
+            _extr_loop = "{"  # direct loop
+        else:
+            _extr_loop = "\nfor (int j_0 = start_layer; j_0 < end_layer; ++j_0){"
         _extr_loop_close = '}\n'
 
     # Prepare buffer for args in kernel invocation.

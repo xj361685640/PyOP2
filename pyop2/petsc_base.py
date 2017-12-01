@@ -829,8 +829,7 @@ class Mat(base.Mat):
             elif None in path:
                 thispath = path[0] or path[1]
                 return _make_object('Arg', data=self.handle.getPythonContext().dat,
-                                    map=thispath.map, idx=thispath.idx,
-                                    access=access)
+                                    map=thispath.map, access=access)
             else:
                 raise
 

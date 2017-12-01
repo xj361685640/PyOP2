@@ -64,6 +64,7 @@ from functools import reduce
 
 import loopy as lp
 
+
 def _make_object(name, *args, **kwargs):
     from pyop2 import sequential
     return getattr(sequential, name)(*args, **kwargs)
@@ -265,14 +266,11 @@ class Arg(object):
         Instead, use the call syntax on the :class:`DataCarrier`.
     """
 
-    def __init__(self, data=None, map=None, idx=None, access=None):
+    def __init__(self, data=None, map=None, access=None):
         """
         :param data: A data-carrying object, either :class:`Dat` or class:`Mat`
         :param map:  A :class:`Map` to access this :class:`Arg` or the default
                      if the identity map is to be used.
-        :param idx:  An index into the :class:`Map`: an :class:`int` to use a
-                     given component of the mapping or the default to use all
-                     components of the mapping.
         :param access: An access descriptor of type :class:`Access`
 
         Checks that:
@@ -284,7 +282,6 @@ class Arg(object):
         A :class:`MapValueError` is raised if these conditions are not met."""
         self.data = data
         self._map = map
-        self._idx = idx
         self._access = access
         self._in_flight = False  # some kind of comms in flight for this arg
 
@@ -310,7 +307,7 @@ class Arg(object):
 
     @property
     def _key(self):
-        return (self.data, self._map, self._idx, self._access)
+        return (self.data, self._map, self._access)
 
     def __hash__(self):
         # FIXME: inconsistent with the equality predicate, but (loop
@@ -331,12 +328,12 @@ class Arg(object):
         return not self.__eq__(other)
 
     def __str__(self):
-        return "OP2 Arg: dat %s, map %s, index %s, access %s" % \
-            (self.data, self._map, self._idx, self._access)
+        return "OP2 Arg: dat %s, map %s, access %s" % \
+            (self.data, self._map, self._access)
 
     def __repr__(self):
-        return "Arg(%r, %r, %r, %r)" % \
-            (self.data, self._map, self._idx, self._access)
+        return "Arg(%r, %r, %r)" % \
+            (self.data, self._map, self._access)
 
     def __iter__(self):
         for arg in self.split:
@@ -346,13 +343,13 @@ class Arg(object):
     def split(self):
         """Split a mixed argument into a tuple of constituent arguments."""
         if self._is_mixed_dat:
-            return tuple(_make_object('Arg', d, m, self._idx, self._access)
+            return tuple(_make_object('Arg', d, m, self._access)
                          for d, m in zip(self.data, self._map))
         elif self._is_mixed_mat:
             s = self.data.sparsity.shape
             mr, mc = self.map
             return tuple(_make_object('Arg', self.data[i, j], (mr.split[i], mc.split[j]),
-                                      self._idx, self._access)
+                                      self._access)
                          for j in range(s[1]) for i in range(s[0]))
         else:
             return (self,)
@@ -376,11 +373,6 @@ class Arg(object):
     def map(self):
         """The :class:`Map` via which the data is to be accessed."""
         return self._map
-
-    @cached_property
-    def idx(self):
-        """Index into the mapping."""
-        return self._idx
 
     @cached_property
     def access(self):
@@ -1556,9 +1548,6 @@ class Dat(DataCarrier, _EmptyDataMixin):
 
     @validate_in(('access', _modes, ModeValueError))
     def __call__(self, access, path=None):
-        if isinstance(path, _MapArg):
-            return _make_object('Arg', data=self, map=path.map, idx=path.idx,
-                                access=access)
         if configuration["type_check"] and path and path.toset != self.dataset.set:
             raise MapValueError("To Set of Map does not match Set of Dat.")
         return _make_object('Arg', data=self, map=path, access=access)
@@ -2622,19 +2611,6 @@ class Global(DataCarrier, _EmptyDataMixin):
         return self._iop(other, operator.itruediv)
 
 
-class _MapArg(object):
-
-    def __init__(self, map, idx):
-        """
-        Temporary :class:`Arg`-like object for :class:`Map`\s.
-
-        :arg map: The :class:`Map`.
-        :arg idx: The index into the map.
-        """
-        self.map = map
-        self.idx = idx
-
-
 class Map(object):
 
     """OP2 map, a relation between two :class:`Set` objects.
@@ -2696,13 +2672,6 @@ class Map(object):
             struct.section = self.section.handle
             struct.indices = self.indices.ctypes.data
             return ctypes.pointer(struct)
-
-    @validate_type(('index', int, IndexTypeError))
-    def __getitem__(self, index):
-        if configuration["type_check"]:
-            if isinstance(index, int) and not (0 <= index < self.arity):
-                raise IndexValueError("Index must be in interval [0,%d]" % (self._arity - 1))
-        return _MapArg(self, index)
 
     # This is necessary so that we can convert a Map to a tuple
     # (needed in as_tuple).  Because, __getitem__ no longer returns a
@@ -3444,13 +3413,9 @@ class Mat(DataCarrier):
 
     @validate_in(('access', _modes, ModeValueError))
     def __call__(self, access, path):
-        path = as_tuple(path, _MapArg, 2)
-        path_maps = tuple(arg and arg.map for arg in path)
-        path_idxs = tuple(arg and arg.idx for arg in path)
-        if configuration["type_check"] and tuple(path_maps) not in self.sparsity:
+        if configuration["type_check"] and tuple(path) not in self.sparsity:
             raise MapValueError("Path maps not in sparsity maps")
-        return _make_object('Arg', data=self, map=path_maps, access=access,
-                            idx=path_idxs)
+        return _make_object('Arg', data=self, map=path, access=access)
 
     def assemble(self):
         """Finalise this :class:`Mat` ready for use.
@@ -3742,14 +3707,13 @@ class JITModule(Cached):
             if arg._is_global:
                 key += (arg.data.dim, arg.data.dtype, arg.access)
             elif arg._is_dat:
-                idx = arg.idx
                 map_arity = arg.map and (tuplify(arg.map.offset) or arg.map.arity)
                 if arg._is_dat_view:
                     view_idx = arg.data.index
                 else:
                     view_idx = None
                 key += (arg.data.dim, arg.data.dtype, map_arity,
-                        idx, view_idx, arg.access)
+                        view_idx, arg.access)
             elif arg._is_mat:
                 map_arities = (tuplify(arg.map[0].offset) or arg.map[0].arity,
                                tuplify(arg.map[1].offset) or arg.map[1].arity)
@@ -3758,8 +3722,8 @@ class JITModule(Cached):
                 # to be part of cache key
                 map_bcs = (arg.map[0].implicit_bcs, arg.map[1].implicit_bcs)
                 map_cmpts = (arg.map[0].vector_index, arg.map[1].vector_index)
-                key += (arg.data.dims, arg.data.dtype, arg.idx,
-                        map_arities, map_bcs, map_cmpts, arg.access)
+                key += (arg.data.dims, arg.data.dtype, map_arities, map_bcs,
+                        map_cmpts, arg.access)
 
         iterate = kwargs.get("iterate", None)
         if iterate is not None:

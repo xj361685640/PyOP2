@@ -39,8 +39,6 @@ import random
 from pyop2 import op2
 from pyop2.exceptions import MapValueError
 
-from coffee.base import *
-
 
 nelems = 4096
 
@@ -137,7 +135,7 @@ class TestIndirectLoop:
         kernel_wo = "void kernel_wo(unsigned int* x) { *x = 42; }\n"
 
         op2.par_loop(op2.Kernel(kernel_wo, "kernel_wo"),
-                     iterset, x(op2.WRITE, iterset2indset[0]))
+                     iterset, x(op2.WRITE, iterset2indset))
         assert all(map(lambda x: x == 42, x.data))
 
     def test_onecolor_rw(self, iterset, x, iterset2indset):
@@ -145,7 +143,7 @@ class TestIndirectLoop:
         kernel_rw = "void kernel_rw(unsigned int* x) { (*x) = (*x) + 1; }\n"
 
         op2.par_loop(op2.Kernel(kernel_rw, "kernel_rw"),
-                     iterset, x(op2.RW, iterset2indset[0]))
+                     iterset, x(op2.RW, iterset2indset))
         assert sum(x.data) == nelems * (nelems + 1) // 2
 
     def test_indirect_inc(self, iterset, unitset, iterset2unitset):
@@ -153,7 +151,7 @@ class TestIndirectLoop:
         u = op2.Dat(unitset, np.array([0], dtype=np.uint32), np.uint32, "u")
         kernel_inc = "void kernel_inc(unsigned int* x) { (*x) = (*x) + 1; }\n"
         op2.par_loop(op2.Kernel(kernel_inc, "kernel_inc"),
-                     iterset, u(op2.INC, iterset2unitset[0]))
+                     iterset, u(op2.INC, iterset2unitset))
         assert u.data[0] == nelems
 
     def test_global_read(self, iterset, x, iterset2indset):
@@ -164,7 +162,7 @@ class TestIndirectLoop:
 
         op2.par_loop(op2.Kernel(kernel_global_read, "kernel_global_read"),
                      iterset,
-                     x(op2.RW, iterset2indset[0]),
+                     x(op2.RW, iterset2indset),
                      g(op2.READ))
         assert sum(x.data) == sum(map(lambda v: v // 2, range(nelems)))
 
@@ -179,16 +177,16 @@ class TestIndirectLoop:
 
         op2.par_loop(
             op2.Kernel(kernel_global_inc, "kernel_global_inc"), iterset,
-            x(op2.RW, iterset2indset[0]),
+            x(op2.RW, iterset2indset),
             g(op2.INC))
         assert sum(x.data) == nelems * (nelems + 1) // 2
-        assert g.data[0] == nelems * (nelems + 1) // 2
+        assert g.data == nelems * (nelems + 1) // 2
 
     def test_2d_dat(self, iterset, iterset2indset, x2):
         """Set both components of a vector-valued Dat to a scalar value."""
         kernel_wo = "void kernel_wo(unsigned int* x) { x[0] = 42; x[1] = 43; }\n"
         op2.par_loop(op2.Kernel(kernel_wo, "kernel_wo"), iterset,
-                     x2(op2.WRITE, iterset2indset[0]))
+                     x2(op2.WRITE, iterset2indset))
         assert all(all(v == [42, 43]) for v in x2.data)
 
     def test_2d_map(self):
@@ -214,50 +212,6 @@ class TestIndirectLoop:
 
         expected = np.arange(1, nedges * 2 + 1, 2)
         assert all(expected == edge_vals.data)
-
-
-@pytest.fixture
-def mset(indset, unitset):
-    return op2.MixedSet((indset, unitset))
-
-
-@pytest.fixture
-def mdat(mset):
-    return op2.MixedDat(mset)
-
-
-@pytest.fixture
-def mmap(iterset2indset, iterset2unitset):
-    return op2.MixedMap((iterset2indset, iterset2unitset))
-
-
-class TestMixedIndirectLoop:
-    """Mixed indirect loop tests."""
-
-    def test_mixed_non_mixed_dat(self, mdat, mmap, iterset):
-        """Increment into a MixedDat from a non-mixed Dat."""
-        d = op2.Dat(iterset, np.ones(iterset.size))
-        kernel_inc = """void kernel_inc(double **d, double *x) {
-          d[0][0] += x[0]; d[1][0] += x[0];
-        }"""
-        op2.par_loop(op2.Kernel(kernel_inc, "kernel_inc"), iterset,
-                     mdat(op2.INC, mmap),
-                     d(op2.READ))
-        assert all(mdat[0].data == 1.0) and mdat[1].data == 4096.0
-
-    def test_mixed_non_mixed_dat_itspace(self, mdat, mmap, iterset):
-        """Increment into a MixedDat from a Dat using iteration spaces."""
-        d = op2.Dat(iterset, np.ones(iterset.size))
-        assembly = Incr(Symbol("d", ("j",)), Symbol("x", (0,)))
-        assembly = c_for("j", 2, assembly)
-        kernel_code = FunDecl("void", "kernel_inc",
-                              [Decl("double", c_sym("*d")),
-                               Decl("double", c_sym("*x"))],
-                              Block([assembly], open_scope=False))
-        op2.par_loop(op2.Kernel(kernel_code, "kernel_inc"), iterset,
-                     mdat(op2.INC, mmap[op2.i[0]]),
-                     d(op2.READ))
-        assert all(mdat[0].data == 1.0) and mdat[1].data == 4096.0
 
 
 if __name__ == '__main__':

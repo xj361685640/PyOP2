@@ -503,7 +503,7 @@ void comp_vol(double A[1], double *x, double *y)
 
         # Assemble the main matrix.
         op2.par_loop(vol_comp, xtr_elements,
-                     xtr_mat(op2.INC, (xtr_elem_node[0], xtr_elem_node[1])),
+                     xtr_mat(op2.INC, (xtr_elem_node, xtr_elem_node)),
                      coords_xtr(op2.READ, xtr_elem_node))
 
         eps = 1.e-5
@@ -515,7 +515,7 @@ void comp_vol(double A[1], double *x, double *y)
         xtr_f = op2.Dat(d_lnodes_xtr, xtr_f_vals, numpy.int32, "xtr_f")
 
         op2.par_loop(vol_comp_rhs, xtr_elements,
-                     xtr_b(op2.INC, xtr_elem_node[0]),
+                     xtr_b(op2.INC, xtr_elem_node),
                      coords_xtr(op2.READ, xtr_elem_node),
                      xtr_f(op2.READ, xtr_elem_node))
 

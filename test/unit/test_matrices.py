@@ -179,7 +179,7 @@ def mass():
         c_q0[i_g][i_d_0][i_d_1] = 0.0;
         for(int q_r_0 = 0; q_r_0 < 3; q_r_0++)
         {
-          c_q0[i_g][i_d_0][i_d_1] += c0[q_r_0][i_d_0] * d_CG1[q_r_0][i_g][i_d_1];
+          c_q0[i_g][i_d_0][i_d_1] += c0[q_r_0*2+i_d_0] * d_CG1[q_r_0][i_g][i_d_1];
         };
       };
     };
@@ -194,7 +194,7 @@ def mass():
 
     kernel_code = FunDecl("void", "mass",
                           [Decl("double", Symbol("localTensor", (3, 3))),
-                           Decl("double*", c_sym("c0[2]"))],
+                           Decl("double *", c_sym("c0"))],
                           Block([init, assembly], open_scope=False))
 
     return op2.Kernel(kernel_code, "mass")
@@ -203,7 +203,7 @@ def mass():
 @pytest.fixture
 def rhs():
     kernel_code = FlatBlock("""
-void rhs(double** localTensor, double* c0[2], double* c1[1])
+void rhs(double* localTensor, double* c0, double* c1)
 {
   double CG1[3][6] = { {  0.09157621, 0.09157621, 0.81684757,
                                    0.44594849, 0.44594849, 0.10810302 },
@@ -238,7 +238,7 @@ void rhs(double** localTensor, double* c0[2], double* c1[1])
     c_q1[i_g] = 0.0;
     for(int q_r_0 = 0; q_r_0 < 3; q_r_0++)
     {
-      c_q1[i_g] += c1[q_r_0][0] * CG1[q_r_0][i_g];
+      c_q1[i_g] += c1[q_r_0] * CG1[q_r_0][i_g];
     };
     for(int i_d_0 = 0; i_d_0 < 2; i_d_0++)
     {
@@ -247,7 +247,7 @@ void rhs(double** localTensor, double* c0[2], double* c1[1])
         c_q0[i_g][i_d_0][i_d_1] = 0.0;
         for(int q_r_0 = 0; q_r_0 < 3; q_r_0++)
         {
-          c_q0[i_g][i_d_0][i_d_1] += c0[q_r_0][i_d_0] * d_CG1[q_r_0][i_g][i_d_1];
+          c_q0[i_g][i_d_0][i_d_1] += c0[q_r_0*2+i_d_0] * d_CG1[q_r_0][i_g][i_d_1];
         };
       };
     };
@@ -258,7 +258,7 @@ void rhs(double** localTensor, double* c0[2], double* c1[1])
     {
       double ST1 = 0.0;
       ST1 += CG1[i_r_0][i_g] * c_q1[i_g] * (c_q0[i_g][0][0] * c_q0[i_g][1][1] + -1 * c_q0[i_g][0][1] * c_q0[i_g][1][0]);
-      localTensor[i_r_0][0] += ST1 * w[i_g];
+      localTensor[i_r_0] += ST1 * w[i_g];
     };
   };
 }""")
@@ -268,10 +268,10 @@ void rhs(double** localTensor, double* c0[2], double* c1[1])
 @pytest.fixture
 def mass_ffc():
     init = FlatBlock("""
-double J_00 = x[1][0] - x[0][0];
-double J_01 = x[2][0] - x[0][0];
-double J_10 = x[1][1] - x[0][1];
-double J_11 = x[2][1] - x[0][1];
+double J_00 = x[1*2] - x[0];
+double J_01 = x[2*2] - x[0];
+double J_10 = x[1*2+1] - x[1];
+double J_11 = x[2*2+1] - x[1];
 
 double detJ = J_00*J_11 - J_01*J_10;
 double det = fabs(detJ);
@@ -290,7 +290,7 @@ for (unsigned int ip = 0; ip < 3; ip++)
 
     kernel_code = FunDecl("void", "mass_ffc",
                           [Decl("double", Symbol("A", (3, 3))),
-                           Decl("double*", c_sym("x[2]"))],
+                           Decl("double*", c_sym("x"))],
                           Block([init, assembly], open_scope=False))
 
     return op2.Kernel(kernel_code, "mass_ffc")
@@ -299,12 +299,12 @@ for (unsigned int ip = 0; ip < 3; ip++)
 @pytest.fixture
 def rhs_ffc():
     kernel_code = FlatBlock("""
-void rhs_ffc(double **A, double *x[2], double **w0)
+void rhs_ffc(double *A, double *x, double *w0)
 {
-    double J_00 = x[1][0] - x[0][0];
-    double J_01 = x[2][0] - x[0][0];
-    double J_10 = x[1][1] - x[0][1];
-    double J_11 = x[2][1] - x[0][1];
+    double J_00 = x[1*2] - x[0];
+    double J_01 = x[2*2] - x[0];
+    double J_10 = x[1*2+1] - x[1];
+    double J_11 = x[2*2+1] - x[1];
 
     double detJ = J_00*J_11 - J_01*J_10;
 
@@ -322,12 +322,12 @@ void rhs_ffc(double **A, double *x[2], double **w0)
 
       for (unsigned int r = 0; r < 3; r++)
       {
-        F0 += FE0[ip][r]*w0[r][0];
+        F0 += FE0[ip][r]*w0[r];
       }
 
       for (unsigned int j = 0; j < 3; j++)
       {
-        A[j][0] += FE0[ip][j]*F0*W3[ip]*det;
+        A[j] += FE0[ip][j]*F0*W3[ip]*det;
       }
     }
 }
@@ -338,10 +338,10 @@ void rhs_ffc(double **A, double *x[2], double **w0)
 @pytest.fixture
 def rhs_ffc_itspace():
     init = FlatBlock("""
-double J_00 = x[1][0] - x[0][0];
-double J_01 = x[2][0] - x[0][0];
-double J_10 = x[1][1] - x[0][1];
-double J_11 = x[2][1] - x[0][1];
+double J_00 = x[1*2] - x[0];
+double J_01 = x[2*2] - x[0];
+double J_10 = x[1*2+1] - x[1];
+double J_11 = x[2*2+1] - x[1];
 
 double detJ = J_00*J_11 - J_01*J_10;
 double det = fabs(detJ);
@@ -358,7 +358,7 @@ for (unsigned int ip = 0; ip < 3; ip++)
 
   for (unsigned int r = 0; r < 3; r++)
   {
-    F0 += FE0[ip][r]*w0[r][0];
+    F0 += FE0[ip][r]*w0[r];
   }
 
 """)
@@ -368,8 +368,8 @@ for (unsigned int ip = 0; ip < 3; ip++)
 
     kernel_code = FunDecl("void", "rhs_ffc_itspace",
                           [Decl("double", Symbol("A", (3,))),
-                           Decl("double*", c_sym("x[2]")),
-                              Decl("double**", c_sym("w0"))],
+                           Decl("double*", c_sym("x")),
+                              Decl("double*", c_sym("w0"))],
                           Block([init, assembly, end], open_scope=False))
 
     return op2.Kernel(kernel_code, "rhs_ffc_itspace")
@@ -572,7 +572,7 @@ class TestMatrices:
         """Mat args can only have modes WRITE and INC."""
         with pytest.raises(ModeValueError):
             op2.par_loop(op2.Kernel("", "dummy"), elements,
-                         mat(mode, (elem_node[op2.i[0]], elem_node[op2.i[1]])))
+                         mat(mode, (elem_node, elem_node)))
 
     @pytest.mark.parametrize('n', [1, 2])
     def test_mat_set_diagonal(self, nodes, elem_node, n):
@@ -642,7 +642,7 @@ class TestMatrices:
         """Assemble a simple finite-element matrix and check the result."""
         mat.zero()
         op2.par_loop(mass, elements,
-                     mat(op2.INC, (elem_node[op2.i[0]], elem_node[op2.i[1]])),
+                     mat(op2.INC, (elem_node, elem_node)),
                      coords(op2.READ, elem_node))
         mat.assemble()
         eps = 1.e-5
@@ -682,13 +682,13 @@ class TestMatrices:
         kernel using op2.WRITE"""
         mat.zero()
         op2.par_loop(kernel_inc, elements,
-                     mat(op2.INC, (elem_node[op2.i[0]], elem_node[op2.i[1]])),
+                     mat(op2.INC, (elem_node, elem_node)),
                      g(op2.READ))
         mat.assemble()
         # Check we have ones in the matrix
         assert mat.values.sum() == 3 * 3 * elements.size
         op2.par_loop(kernel_set, elements,
-                     mat(op2.WRITE, (elem_node[op2.i[0]], elem_node[op2.i[1]])),
+                     mat(op2.WRITE, (elem_node, elem_node)),
                      g(op2.READ))
         mat.assemble()
         assert mat.values.sum() == (3 * 3 - 2) * elements.size
@@ -704,7 +704,7 @@ class TestMatrices:
                           elem_node, expected_matrix):
         """Test that the FFC mass assembly assembles the correct values."""
         op2.par_loop(mass_ffc, elements,
-                     mat(op2.INC, (elem_node[op2.i[0]], elem_node[op2.i[1]])),
+                     mat(op2.INC, (elem_node, elem_node)),
                      coords(op2.READ, elem_node))
         mat.assemble()
         eps = 1.e-5
@@ -730,7 +730,7 @@ class TestMatrices:
         op2.par_loop(zero_dat, nodes,
                      b(op2.WRITE))
         op2.par_loop(rhs_ffc_itspace, elements,
-                     b(op2.INC, elem_node[op2.i[0]]),
+                     b(op2.INC, elem_node),
                      coords(op2.READ, elem_node),
                      f(op2.READ, elem_node))
         eps = 1.e-6
@@ -863,97 +863,6 @@ class TestMatrixStateChanges:
         mat.assemble()
         mat._force_evaluation()
         assert flush_counter[0] == 1
-
-
-class TestMixedMatrices:
-    """
-    Matrix tests for mixed spaces
-    """
-
-    # off-diagonal blocks
-    od = np.array([[1.0, 2.0, 0.0, 0.0],
-                   [0.0, 4.0, 6.0, 0.0],
-                   [0.0, 0.0, 9.0, 12.0]])
-    # lower left block
-    ll = (np.diag([1.0, 8.0, 18.0, 16.0]) +
-          np.diag([2.0, 6.0, 12.0], -1) +
-          np.diag([2.0, 6.0, 12.0], 1))
-
-    @pytest.fixture
-    def mat(self, msparsity, mmap, mdat):
-        mat = op2.Mat(msparsity)
-
-        code = c_for("i", 3,
-                     c_for("j", 3,
-                           Incr(Symbol("v", ("i", "j")), FlatBlock("d[i][0] * d[j][0]"))))
-        addone = FunDecl("void", "addone_mat",
-                         [Decl("double", Symbol("v", (3, 3))),
-                          Decl("double", c_sym("**d"))],
-                         Block([code], open_scope=False))
-
-        addone = op2.Kernel(addone, "addone_mat")
-        op2.par_loop(addone, mmap.iterset,
-                     mat(op2.INC, (mmap[op2.i[0]], mmap[op2.i[1]])),
-                     mdat(op2.READ, mmap))
-        mat.assemble()
-        mat._force_evaluation()
-        return mat
-
-    @pytest.fixture
-    def dat(self, mset, mmap, mdat):
-        dat = op2.MixedDat(mset)
-        kernel_code = FunDecl("void", "addone_rhs",
-                              [Decl("double", Symbol("v", (3,))),
-                               Decl("double**", c_sym("d"))],
-                              c_for("i", 3, Incr(Symbol("v", ("i")), FlatBlock("d[i][0]"))))
-        addone = op2.Kernel(kernel_code, "addone_rhs")
-        op2.par_loop(addone, mmap.iterset,
-                     dat(op2.INC, mmap[op2.i[0]]),
-                     mdat(op2.READ, mmap))
-        return dat
-
-    @pytest.mark.xfail(reason="Assembling directly into mixed mats unsupported")
-    def test_assemble_mixed_mat(self, mat):
-        """Assemble into a matrix declared on a mixed sparsity."""
-        eps = 1.e-12
-        assert_allclose(mat[0, 0].values, np.diag([1.0, 4.0, 9.0]), eps)
-        assert_allclose(mat[0, 1].values, self.od, eps)
-        assert_allclose(mat[1, 0].values, self.od.T, eps)
-        assert_allclose(mat[1, 1].values, self.ll, eps)
-
-    def test_assemble_mixed_rhs(self, dat):
-        """Assemble a simple right-hand side over a mixed space and check result."""
-        eps = 1.e-12
-        assert_allclose(dat[0].data_ro, rdata(3), eps)
-        assert_allclose(dat[1].data_ro, [1.0, 4.0, 6.0, 4.0], eps)
-
-    def test_assemble_mixed_rhs_vector(self, mset, mmap, mvdat):
-        """Assemble a simple right-hand side over a mixed space and check result."""
-        dat = op2.MixedDat(mset ** 2)
-        assembly = Block(
-            [Incr(Symbol("v", ("i"), ((2, 0),)), FlatBlock("d[i][0]")),
-             Incr(Symbol("v", ("i"), ((2, 1),)), FlatBlock("d[i][1]"))], open_scope=True)
-        kernel_code = FunDecl("void", "addone_rhs_vec",
-                              [Decl("double", Symbol("v", (6,))),
-                               Decl("double**", c_sym("d"))],
-                              c_for("i", 3, assembly))
-        addone = op2.Kernel(kernel_code, "addone_rhs_vec")
-        op2.par_loop(addone, mmap.iterset,
-                     dat(op2.INC, mmap[op2.i[0]]),
-                     mvdat(op2.READ, mmap))
-        eps = 1.e-12
-        exp = np.kron(list(zip([1.0, 4.0, 6.0, 4.0])), np.ones(2))
-        assert_allclose(dat[0].data_ro, np.kron(list(zip(rdata(3))), np.ones(2)), eps)
-        assert_allclose(dat[1].data_ro, exp, eps)
-
-    @pytest.mark.xfail(reason="Assembling directly into mixed mats unsupported")
-    def test_solve_mixed(self, mat, dat):
-        x = op2.MixedDat(dat.dataset)
-        op2.solve(mat, x, dat)
-        b = mat * x
-        eps = 1.e-12
-        assert_allclose(dat[0].data_ro, b[0].data_ro, eps)
-        assert_allclose(dat[1].data_ro, b[1].data_ro, eps)
 
 
 if __name__ == '__main__':
